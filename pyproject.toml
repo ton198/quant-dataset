@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quant-dataset"
+version = "0.1.0"
+description = "Preparation and publication utilities for frozen quantitative datasets"
+requires-python = ">=3.10"
+dependencies = [
+    "exchange-calendars==4.11.3",
+    "numpy",
+    "pandas",
+    "yfinance==0.2.66",
+    "tomli>=2.0; python_version < '3.11'",
+    "torch>=2.14.0",
+    "pyarrow>=25.0.1",
+]
+
+[project.scripts]
+quant-dataset = "cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.unittest]
+test_discovery = "tests"

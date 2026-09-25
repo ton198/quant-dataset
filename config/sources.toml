@@ -1,0 +1,65 @@
+# Non-secret provider configuration for the v2 download pipeline.
+# Safe to commit. Effective values are combined with config/secrets.toml
+# and any explicit CLI overrides.
+
+[universe]
+# Source of tickers + CIK mapping. Currently only SEC's exchange file.
+source = "sec.company_tickers_exchange"
+exchanges = ["Nasdaq", "NYSE"]
+url = "https://www.sec.gov/files/company_tickers_exchange.json"
+
+[market]
+provider = "yahoo"
+interval = "1d"
+auto_adjust = false          # return raw open/high/low/close/adj_close/volume
+actions = true
+threads = false
+rate_limit_seconds = 0.5     # polite throttle between per-ticker requests
+timeout_seconds = 30
+max_retries = 3
+
+[financials]
+provider = "sec"
+# Per-CIK fetch sequence: Company Facts -> Submissions -> historical submission pages
+company_facts_url_template = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik10}.json"
+submissions_url_template = "https://data.sec.gov/submissions/CIK{cik10}.json"
+rate_limit_seconds = 0.2     # SEC enforces ~5 req/s; stay polite
+timeout_seconds = 30
+max_retries = 3
+
+[macros]
+provider = "fred"
+base_url = "https://api.stlouisfed.org/fred/series/observations"
+file_type = "json"
+observation_start = "1990-01-01"
+rate_limit_seconds = 0.1
+timeout_seconds = 30
+max_retries = 3
+# Phase-1 series (US macro sufficient for first integration)
+series = [
+  "CPIAUCSL",       # CPI (monthly)
+  "CPILFESL",       # Core CPI (monthly)
+  "PAYEMS",         # Nonfarm payrolls (monthly)
+  "UNRATE",         # Unemployment rate (monthly)
+  "FEDFUNDS",       # Effective fed funds rate (daily)
+  "DGS2",           # 2Y Treasury yield (daily)
+  "DGS10",          # 10Y Treasury yield (daily)
+  "BAMLH0A0HYM2",   # US High Yield OAS (daily)
+  "VIXCLS",         # VIX (daily)
+  "DEXUSEU",        # USD / EUR (daily) -- USD index proxy
+  "DCOILWTICO",     # WTI crude oil (daily)
+]
+
+[download]
+# Where to put raw payloads and organized outputs (relative to repo root)
+raw_dir = "data/raw"
+organized_dir = "data/organized"
+progress_file = "data/.download_progress"
+progress_tmp_file = "data/.download_progress.tmp"
+progress_lock_file = "data/.download_progress.lock"
+# Per design: progress file is ALWAYS preserved (it doubles as a re-download
+# worklist). Use `--force` to ignore it and start from scratch.
+preserve_progress_on_success = true
+
+[logging]
+level = "INFO"

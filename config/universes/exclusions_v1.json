@@ -1,0 +1,17 @@
+{
+  "schema": "sec_universe_exclusions_v1",
+  "entries": [
+    {
+      "asset_id": "AYA",
+      "ticker": "AYA",
+      "cik10": "0001826836",
+      "reason": "user_approved_non_operating_or_out_of_period"
+    },
+    {
+      "asset_id": "FUND",
+      "ticker": "FUND",
+      "cik10": "0000825202",
+      "reason": "user_approved_non_operating_or_out_of_period"
+    }
+  ]
+}

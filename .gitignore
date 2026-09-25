@@ -1,0 +1,34 @@
+data/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.coverage
+
+# Secrets -- never commit
+config/secrets.toml
+
+# Python caches / venv
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Build outputs
+*.egg-info/
+dist/
+build/
+
+# Editor
+.DS_Store
+
+# Runtime logs / progress
+logs/
+.download_progress
+
+# Archived snapshots (local only)
+archive/
