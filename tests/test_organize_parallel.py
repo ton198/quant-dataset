@@ -15,7 +15,6 @@ if str(SOURCE_ROOT) not in sys.path:
 
 from download import manager, organize, universe
 
-
 _CALENDAR = [date(2020, 1, 2), date(2020, 1, 3)]
 
 
@@ -57,12 +56,19 @@ def test_process_results_match_serial_organization(tmp_path: Path) -> None:
         universe_dir.mkdir(parents=True)
         payload = {
             "fields": ["cik", "name", "ticker", "exchange"],
-            "data": [[index, "test", ticker, "NYSE"] for index, ticker in enumerate(tickers, start=1)],
+            "data": [
+                [index, "test", ticker, "NYSE"] for index, ticker in enumerate(tickers, start=1)
+            ],
         }
         (universe_dir / "snapshot.json").write_text(json.dumps(payload), encoding="utf-8")
 
     succeeded, skipped, failed = manager._organize_tickers(
-        tickers, universe_rows, parallel_root / "raw", parallel_root / "organized", _CALENDAR, 2,
+        tickers,
+        universe_rows,
+        parallel_root / "raw",
+        parallel_root / "organized",
+        _CALENDAR,
+        2,
     )
     assert (succeeded, skipped, failed) == (2, 0, 0)
 
@@ -70,7 +76,10 @@ def test_process_results_match_serial_organization(tmp_path: Path) -> None:
         cik10 = universe_rows[ticker].cik10
         organize.organize_market(ticker, serial_root / "raw", serial_root / "organized", _CALENDAR)
         organize.organize_financials(
-            cik10, serial_root / "raw", serial_root / "organized", _CALENDAR,
+            cik10,
+            serial_root / "raw",
+            serial_root / "organized",
+            _CALENDAR,
         )
         parallel_market, parallel_meta = _organized_paths(parallel_root, ticker)
         serial_market, serial_meta = _organized_paths(serial_root, ticker)
@@ -129,15 +138,17 @@ def test_shared_cik_tickers_write_independent_outputs_in_parallel(tmp_path: Path
     raw_dir = tmp_path / "raw"
     organized_dir = tmp_path / "organized"
     tickers = ["ABR-PD", "ABR-PE"]
-    rows = {
-        ticker: universe.TickerRow(ticker, "0001253986", "NYSE", "test")
-        for ticker in tickers
-    }
+    rows = {ticker: universe.TickerRow(ticker, "0001253986", "NYSE", "test") for ticker in tickers}
     for ticker in tickers:
         _write_market_input(raw_dir, ticker)
 
     assert manager._organize_tickers(
-        tickers, rows, raw_dir, organized_dir, _CALENDAR, 2,
+        tickers,
+        rows,
+        raw_dir,
+        organized_dir,
+        _CALENDAR,
+        2,
     ) == (2, 0, 0)
 
     for ticker in tickers:
@@ -155,10 +166,18 @@ def test_empty_cik_does_not_require_financial_output(tmp_path: Path) -> None:
     _write_market_input(raw_dir, "AAA")
     rows = {"AAA": universe.TickerRow("AAA", "", "NYSE", "test")}
 
-    assert manager._organize_tickers(["AAA"], rows, raw_dir, organized_dir, _CALENDAR, 1) == (1, 0, 0)
+    assert manager._organize_tickers(["AAA"], rows, raw_dir, organized_dir, _CALENDAR, 1) == (
+        1,
+        0,
+        0,
+    )
     assert not (organized_dir / "stocks" / "AAA" / "financials.csv").exists()
     assert manager._ticker_is_organized("AAA", raw_dir, organized_dir, require_financials=False)
-    assert manager._organize_tickers(["AAA"], rows, raw_dir, organized_dir, _CALENDAR, 1) == (0, 1, 0)
+    assert manager._organize_tickers(["AAA"], rows, raw_dir, organized_dir, _CALENDAR, 1) == (
+        0,
+        1,
+        0,
+    )
 
 
 def test_missing_yahoo_data_with_cik_completes_and_is_skipped_next_run(tmp_path: Path) -> None:
@@ -167,14 +186,22 @@ def test_missing_yahoo_data_with_cik_completes_and_is_skipped_next_run(tmp_path:
     organized_dir = tmp_path / "organized"
     rows = {"AAA": universe.TickerRow("AAA", "0000000001", "NYSE", "test")}
 
-    assert manager._organize_tickers(["AAA"], rows, raw_dir, organized_dir, _CALENDAR, 1) == (1, 0, 0)
+    assert manager._organize_tickers(["AAA"], rows, raw_dir, organized_dir, _CALENDAR, 1) == (
+        1,
+        0,
+        0,
+    )
     directory = organized_dir / "stocks" / "AAA"
     assert (directory / "financials.csv").is_file()
     assert not (directory / "market.csv").exists()
     metadata = json.loads((directory / "_meta.json").read_text(encoding="utf-8"))
     assert metadata["ticker"] == "AAA"
     assert manager._ticker_is_organized("AAA", raw_dir, organized_dir, require_financials=True)
-    assert manager._organize_tickers(["AAA"], rows, raw_dir, organized_dir, _CALENDAR, 1) == (0, 1, 0)
+    assert manager._organize_tickers(["AAA"], rows, raw_dir, organized_dir, _CALENDAR, 1) == (
+        0,
+        1,
+        0,
+    )
 
 
 def test_corrupt_meta_or_missing_recorded_output_is_reorganized(tmp_path: Path) -> None:
@@ -200,7 +227,12 @@ def test_one_ticker_failure_does_not_block_other_tickers(tmp_path: Path) -> None
     _write_market_input(raw_dir, "BAD", valid=False)
 
     assert manager._organize_tickers(
-        ["GOOD", "BAD"], {}, raw_dir, organized_dir, _CALENDAR, 2,
+        ["GOOD", "BAD"],
+        {},
+        raw_dir,
+        organized_dir,
+        _CALENDAR,
+        2,
     ) == (1, 0, 1)
     assert (organized_dir / "stocks" / "GOOD" / "market.csv").is_file()
     assert not (organized_dir / "stocks" / "BAD" / "_meta.json").exists()

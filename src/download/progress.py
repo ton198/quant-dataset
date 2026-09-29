@@ -7,11 +7,11 @@ import json
 import os
 import time
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
 
 from .errors import DownloadError
 
@@ -31,10 +31,13 @@ def load(path: Path) -> Progress | None:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
         return Progress(
-            run_id=str(value["run_id"]), started_at_utc=str(value["started_at_utc"]),
+            run_id=str(value["run_id"]),
+            started_at_utc=str(value["started_at_utc"]),
             universe_source=str(value["universe_source"]),
-            stages={str(stage): {str(item): str(status) for item, status in items.items()}
-                    for stage, items in value["stages"].items()},
+            stages={
+                str(stage): {str(item): str(status) for item, status in items.items()}
+                for stage, items in value["stages"].items()
+            },
         )
     except FileNotFoundError:
         return None
@@ -153,7 +156,9 @@ def acquire_lock(lock_path: Path) -> Iterator[None]:
             if not _reclaim_stale_lock(lock_path):
                 raise DownloadError(f"Another download run holds lock {lock_path}") from exc
             if attempt == 2:
-                raise DownloadError(f"Unable to acquire lock after stale-lock retries: {lock_path}") from exc
+                raise DownloadError(
+                    f"Unable to acquire lock after stale-lock retries: {lock_path}"
+                ) from exc
             continue
         try:
             os.write(descriptor, f"{pid}\n".encode("ascii"))
@@ -184,21 +189,31 @@ def acquire_lock(lock_path: Path) -> Iterator[None]:
             entry = _lock_file_entry(lock_path)
             descriptor_stat = os.fstat(descriptor)
             descriptor_identity = (descriptor_stat.st_dev, descriptor_stat.st_ino)
-            if (entry is not None and entry[0] == descriptor_identity and entry[1] == pid):
+            if entry is not None and entry[0] == descriptor_identity and entry[1] == pid:
                 _unlink_if_same_inode(lock_path, descriptor_identity)
         finally:
             os.close(descriptor)
 
 
-def initialize(stages: dict[str, list[str]], universe_source: str, force: bool,
-               path: Path, tmp_path: Path, lock_path: Path) -> Progress:
+def initialize(
+    stages: dict[str, list[str]],
+    universe_source: str,
+    force: bool,
+    path: Path,
+    tmp_path: Path,
+    lock_path: Path,
+) -> Progress:
     """Load resumable state or create a fresh progress work list."""
     del lock_path  # Lock lifetime is managed by ``acquire_lock`` at the caller.
     existing = None if force else load(path)
     if existing is None:
         now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        progress = Progress(uuid.uuid4().hex, now, universe_source,
-                            {stage: {item: "pending" for item in items} for stage, items in stages.items()})
+        progress = Progress(
+            uuid.uuid4().hex,
+            now,
+            universe_source,
+            {stage: {item: "pending" for item in items} for stage, items in stages.items()},
+        )
     else:
         progress = existing
         progress.universe_source = universe_source or progress.universe_source

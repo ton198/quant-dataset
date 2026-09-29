@@ -15,8 +15,9 @@ from .errors import DownloadError
 logger = logging.getLogger(__name__)
 
 
-def fetch_market(ticker: str, start: date, end: date,
-                 cfg: SourcesConfig, raw_dir: Path) -> Path | None:
+def fetch_market(
+    ticker: str, start: date, end: date, cfg: SourcesConfig, raw_dir: Path
+) -> Path | None:
     """Download a requested date interval; Yahoo's end date is exclusive."""
     try:
         import yfinance as yf
@@ -28,9 +29,15 @@ def fetch_market(ticker: str, start: date, end: date,
     for attempt in range(max(1, cfg.market.max_retries)):
         try:
             frame = yf.download(
-                ticker, start=start.isoformat(), end=(end + timedelta(days=1)).isoformat(),
-                interval="1d", auto_adjust=False, actions=True, threads=False,
-                progress=False, timeout=cfg.market.timeout_seconds,
+                ticker,
+                start=start.isoformat(),
+                end=(end + timedelta(days=1)).isoformat(),
+                interval="1d",
+                auto_adjust=False,
+                actions=True,
+                threads=False,
+                progress=False,
+                timeout=cfg.market.timeout_seconds,
             )
             if frame is None or frame.empty:
                 return None
@@ -44,6 +51,6 @@ def fetch_market(ticker: str, start: date, end: date,
             last_error = exc
             logger.warning("Yahoo request failed for %s (attempt %s): %s", ticker, attempt + 1, exc)
             if attempt + 1 < max(1, cfg.market.max_retries):
-                time.sleep(min(2 ** attempt, 8))
+                time.sleep(min(2**attempt, 8))
     logger.error("Yahoo request failed for %s: %s", ticker, last_error)
     return None

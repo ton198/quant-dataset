@@ -1,0 +1,12 @@
+name: 提问
+description: 使用、数据格式或行为上的疑问
+title: "[Question] "
+labels: ["question"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: 描述
+      description: 你想了解什么？请附上相关命令、文档链接或产物名称
+    validations:
+      required: true

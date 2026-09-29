@@ -5,12 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import math
 import shutil
 import tempfile
-from datetime import date
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -21,20 +19,38 @@ import pyarrow.parquet as pq
 logger = logging.getLogger(__name__)
 
 MACRO_SERIES = (
-    "BAMLH0A0HYM2", "CPIAUCSL", "CPILFESL", "DCOILWTICO", "DEXUSEU",
-    "DGS10", "DGS2", "FEDFUNDS", "PAYEMS", "UNRATE", "VIXCLS",
+    "BAMLH0A0HYM2",
+    "CPIAUCSL",
+    "CPILFESL",
+    "DCOILWTICO",
+    "DEXUSEU",
+    "DGS10",
+    "DGS2",
+    "FEDFUNDS",
+    "PAYEMS",
+    "UNRATE",
+    "VIXCLS",
 )
 MARKET_RAW = (
-    "f_raw_return_1d", "f_raw_return_5d", "f_raw_return_20d",
-    "f_raw_volatility_20", "f_raw_volume_ratio_20", "f_raw_intraday_range",
+    "f_raw_return_1d",
+    "f_raw_return_5d",
+    "f_raw_return_20d",
+    "f_raw_volatility_20",
+    "f_raw_volume_ratio_20",
+    "f_raw_intraday_range",
 )
 DERIVED_RAW = (
-    "f_raw_momentum_60", "f_raw_momentum_120", "f_raw_volatility_60",
+    "f_raw_momentum_60",
+    "f_raw_momentum_120",
+    "f_raw_volatility_60",
     "f_raw_volume_zscore_60",
 )
 FINANCIAL_RAW = (
-    "f_raw_revenue_yoy", "f_raw_net_income_yoy", "f_raw_operating_income_yoy",
-    "f_raw_assets_yoy", "f_raw_days_since_filing",
+    "f_raw_revenue_yoy",
+    "f_raw_net_income_yoy",
+    "f_raw_operating_income_yoy",
+    "f_raw_assets_yoy",
+    "f_raw_days_since_filing",
 )
 STOCK_RAW = (*MARKET_RAW, *DERIVED_RAW, *FINANCIAL_RAW)
 MACRO_RAW = tuple(
@@ -45,11 +61,24 @@ MACRO_RAW = tuple(
 RAW_FEATURES = (*STOCK_RAW, *MACRO_RAW)
 CS_FEATURES = tuple(f"f_cs_{name.removeprefix('f_raw_')}" for name in STOCK_RAW)
 MISS_FEATURES = tuple(f"miss_{name.removeprefix('f_raw_')}" for name in RAW_FEATURES)
-LABELS = (*tuple(f"target_return_{horizon}d" for horizon in range(1, 31)), "excess_5d", "excess_21d")
+LABELS = (
+    *tuple(f"target_return_{horizon}d" for horizon in range(1, 31)),
+    "excess_5d",
+    "excess_21d",
+)
 
 _MARKET_REQUIRED = {
-    "date", "open", "close", "adj_close", "volume", "return_1d", "return_5d",
-    "return_20d", "volatility_20", "volume_ratio_20", "intraday_range",
+    "date",
+    "open",
+    "close",
+    "adj_close",
+    "volume",
+    "return_1d",
+    "return_5d",
+    "return_20d",
+    "volatility_20",
+    "volume_ratio_20",
+    "intraday_range",
 }
 _FINANCIAL_VALUES = ("revenue", "net_income", "operating_income", "assets")
 _PURGE_SESSIONS = 30
@@ -68,7 +97,8 @@ _PURGE_SEMANTICS = (
 
 
 def _purge_windows(
-    calendar: pd.DatetimeIndex, purge_sessions: int = _PURGE_SESSIONS,
+    calendar: pd.DatetimeIndex,
+    purge_sessions: int = _PURGE_SESSIONS,
 ) -> dict[str, dict[str, Any]]:
     """Return canonical-session embargo windows before each populated split boundary."""
     windows: dict[str, dict[str, Any]] = {}
@@ -120,7 +150,7 @@ def _is_common(asset_id: str) -> bool:
         return True
     suffix = asset_id.rsplit("-", 1)[1].upper()
     return not (
-        suffix in {"UN", "WT", "W", "P", "R", "U", "WS", "RT", "R"}
+        suffix in {"UN", "WT", "W", "P", "R", "U", "WS", "RT"}
         or suffix.startswith(("P", "W", "R", "U"))
         or suffix.endswith(("UN", "WT", "WS", "RT"))
     )
@@ -175,14 +205,18 @@ def _positive_finite(values: np.ndarray) -> np.ndarray:
     return np.isfinite(values) & (values > 0)
 
 
-def _aligned_numeric(frame: pd.DataFrame, name: str, size: int, positions: np.ndarray) -> np.ndarray:
+def _aligned_numeric(
+    frame: pd.DataFrame, name: str, size: int, positions: np.ndarray
+) -> np.ndarray:
     aligned = np.full(size, np.nan, dtype=np.float64)
     aligned[positions] = pd.to_numeric(frame[name], errors="coerce").to_numpy(dtype=np.float64)
     return aligned
 
 
 def _rolling_std(values: np.ndarray, window: int) -> np.ndarray:
-    return pd.Series(values).rolling(window, min_periods=window).std(ddof=1).to_numpy(dtype=np.float64)
+    return (
+        pd.Series(values).rolling(window, min_periods=window).std(ddof=1).to_numpy(dtype=np.float64)
+    )
 
 
 def _financial_features(path: Path | None, signal_dates: pd.DatetimeIndex) -> dict[str, np.ndarray]:
@@ -236,14 +270,17 @@ def _financial_features(path: Path | None, signal_dates: pd.DatetimeIndex) -> di
             prior_target = end_value - pd.DateOffset(years=1)
             candidates = [
                 (candidate_date, candidate_index)
-                for candidate_date, candidate_index in report_year_history.get(int(end_value.year) - 1, {}).items()
+                for candidate_date, candidate_index in report_year_history.get(
+                    int(end_value.year) - 1, {}
+                ).items()
                 if abs((candidate_date - prior_target).days) <= 15
             ]
             if candidates:
                 _, prior_index = min(
                     candidates,
                     key=lambda candidate: (
-                        abs((candidate[0] - prior_target).days), candidate[0],
+                        abs((candidate[0] - prior_target).days),
+                        candidate[0],
                     ),
                 )
 
@@ -260,11 +297,14 @@ def _financial_features(path: Path | None, signal_dates: pd.DatetimeIndex) -> di
         if pd.notna(end_value) and row[list(_FINANCIAL_VALUES)].notna().any():
             report_year_history.setdefault(int(end_value.year), {})[end_value] = index
 
-    positions = np.searchsorted(
-        frame["_available"].to_numpy(dtype="datetime64[ns]"),
-        signal_dates.to_numpy(dtype="datetime64[ns]"),
-        side="right",
-    ) - 1
+    positions = (
+        np.searchsorted(
+            frame["_available"].to_numpy(dtype="datetime64[ns]"),
+            signal_dates.to_numpy(dtype="datetime64[ns]"),
+            side="right",
+        )
+        - 1
+    )
     visible = positions >= 0
     mapped = {
         "f_raw_revenue_yoy": yoys["f_raw_revenue_yoy"],
@@ -311,30 +351,40 @@ def _ticker_samples(
     adjusted_closes = _aligned_numeric(sample_source, "adj_close", size, positions)
     volumes = _aligned_numeric(sample_source, "volume", size, positions)
     factor = np.divide(
-        adjusted_closes, closes,
+        adjusted_closes,
+        closes,
         out=np.full(size, np.nan, dtype=np.float64),
         where=np.isfinite(closes) & (closes != 0),
     )
     adjusted_opens = opens * factor
     valid_bar = (
-        _positive_finite(opens) & _positive_finite(closes) & _positive_finite(factor)
+        _positive_finite(opens)
+        & _positive_finite(closes)
+        & _positive_finite(factor)
         & np.isfinite(adjusted_opens)
     )
 
     raw: dict[str, np.ndarray] = {}
     for source, target in (
-        ("return_1d", "f_raw_return_1d"), ("return_5d", "f_raw_return_5d"),
-        ("return_20d", "f_raw_return_20d"), ("volatility_20", "f_raw_volatility_20"),
-        ("volume_ratio_20", "f_raw_volume_ratio_20"), ("intraday_range", "f_raw_intraday_range"),
+        ("return_1d", "f_raw_return_1d"),
+        ("return_5d", "f_raw_return_5d"),
+        ("return_20d", "f_raw_return_20d"),
+        ("volatility_20", "f_raw_volatility_20"),
+        ("volume_ratio_20", "f_raw_volume_ratio_20"),
+        ("intraday_range", "f_raw_intraday_range"),
     ):
-        raw[target] = pd.to_numeric(sample_source[source], errors="coerce").to_numpy(dtype=np.float32)
+        raw[target] = pd.to_numeric(sample_source[source], errors="coerce").to_numpy(
+            dtype=np.float32
+        )
 
     for days in (60, 120):
         momentum = np.full(size, np.nan, dtype=np.float64)
         valid_positions = positions >= days
         current = positions[valid_positions]
         prior = current - days
-        valid = _positive_finite(adjusted_closes[current]) & _positive_finite(adjusted_closes[prior])
+        valid = _positive_finite(adjusted_closes[current]) & _positive_finite(
+            adjusted_closes[prior]
+        )
         values = np.full(len(current), np.nan, dtype=np.float64)
         values[valid] = adjusted_closes[current[valid]] / adjusted_closes[prior[valid]] - 1.0
         momentum[current] = values
@@ -351,7 +401,8 @@ def _ticker_samples(
     volume_mean = volume_series.rolling(60, min_periods=60).mean().to_numpy(dtype=np.float64)
     volume_std = volume_series.rolling(60, min_periods=60).std(ddof=1).to_numpy(dtype=np.float64)
     volume_z = np.divide(
-        volumes - volume_mean, volume_std,
+        volumes - volume_mean,
+        volume_std,
         out=np.full(size, np.nan, dtype=np.float64),
         where=np.isfinite(volume_std) & (volume_std > 0),
     )
@@ -403,10 +454,17 @@ def _ticker_samples(
     hi = np.minimum(positions + 32, size)
     result["flag_extreme_label"] = ((glitch_cdf[hi] - glitch_cdf[lo]) > 0).astype(np.uint8)
 
-    return pd.DataFrame(result, columns=[
-        "date", "asset_id", "is_common", "flag_extreme_label", *RAW_FEATURES,
-        *tuple(f"target_return_{h}d" for h in range(1, 31)),
-    ])
+    return pd.DataFrame(
+        result,
+        columns=[
+            "date",
+            "asset_id",
+            "is_common",
+            "flag_extreme_label",
+            *RAW_FEATURES,
+            *tuple(f"target_return_{h}d" for h in range(1, 31)),
+        ],
+    )
 
 
 def _inverse_normal(probabilities: np.ndarray) -> np.ndarray:
@@ -415,12 +473,29 @@ def _inverse_normal(probabilities: np.ndarray) -> np.ndarray:
     out = np.full(p.shape, np.nan, dtype=np.float64)
     valid = np.isfinite(p) & (p > 0.0) & (p < 1.0)
     x = p[valid]
-    a = (-3.969683028665376e1, 2.209460984245205e2, -2.759285104469687e2,
-         1.383577518672690e2, -3.066479806614716e1, 2.506628277459239)
-    b = (-5.447609879822406e1, 1.615858368580409e2, -1.556989798598866e2,
-         6.680131188771972e1, -1.328068155288572e1)
-    c = (-7.784894002430293e-3, -3.223964580411365e-1, -2.400758277161838,
-         -2.549732539343734, 4.374664141464968, 2.938163982698783)
+    a = (
+        -3.969683028665376e1,
+        2.209460984245205e2,
+        -2.759285104469687e2,
+        1.383577518672690e2,
+        -3.066479806614716e1,
+        2.506628277459239,
+    )
+    b = (
+        -5.447609879822406e1,
+        1.615858368580409e2,
+        -1.556989798598866e2,
+        6.680131188771972e1,
+        -1.328068155288572e1,
+    )
+    c = (
+        -7.784894002430293e-3,
+        -3.223964580411365e-1,
+        -2.400758277161838,
+        -2.549732539343734,
+        4.374664141464968,
+        2.938163982698783,
+    )
     d = (7.784695709041462e-3, 3.224671290700398e-1, 2.445134137142996, 3.754408661907416)
     low = 0.02425
     high = 1.0 - low
@@ -430,17 +505,22 @@ def _inverse_normal(probabilities: np.ndarray) -> np.ndarray:
     values = np.empty_like(x)
     if lower.any():
         q = np.sqrt(-2.0 * np.log(x[lower]))
-        values[lower] = (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / \
-            ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0)
+        values[lower] = (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / (
+            (((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0
+        )
     if upper.any():
         q = np.sqrt(-2.0 * np.log(1.0 - x[upper]))
-        values[upper] = -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / \
-            ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0)
+        values[upper] = -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / (
+            (((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0
+        )
     if middle.any():
         q = x[middle] - 0.5
         r = q * q
-        values[middle] = (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / \
-            (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1.0)
+        values[middle] = (
+            (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5])
+            * q
+            / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1.0)
+        )
     out[valid] = values
     return out
 
@@ -478,17 +558,27 @@ def _clean_outputs(output: Path) -> None:
 
 
 def _write_json(path: Path, value: Any) -> None:
-    path.write_text(json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8"
+    )
 
 
 def _stats_block(values: np.ndarray) -> dict[str, float | int | None]:
     if values.size == 0:
-        return {"n": 0, "mean": None, "std": None, "p50": None, "p99": None,
-                "exact_zero_fraction": None}
+        return {
+            "n": 0,
+            "mean": None,
+            "std": None,
+            "p50": None,
+            "p99": None,
+            "exact_zero_fraction": None,
+        }
     return {
-        "n": int(values.size), "mean": float(values.mean()),
+        "n": int(values.size),
+        "mean": float(values.mean()),
         "std": float(values.std(ddof=1)) if values.size > 1 else 0.0,
-        "p50": float(np.percentile(values, 50)), "p99": float(np.percentile(values, 99)),
+        "p50": float(np.percentile(values, 50)),
+        "p99": float(np.percentile(values, 99)),
         "exact_zero_fraction": float((values == 0.0).mean()),
     }
 
@@ -502,7 +592,9 @@ def _label_qc(samples_dir: Path) -> dict[str, dict[str, dict[str, float | int | 
         for path in parquet_files:
             table = pq.read_table(path, columns=[column, "flag_extreme_label"])
             values = np.asarray(table[column].to_numpy(zero_copy_only=False), dtype=np.float64)
-            flags = np.asarray(table["flag_extreme_label"].to_numpy(zero_copy_only=False)).astype(bool)
+            flags = np.asarray(table["flag_extreme_label"].to_numpy(zero_copy_only=False)).astype(
+                bool
+            )
             finite = np.isfinite(values)
             values, flags = values[finite], flags[finite]
             if values.size:
@@ -516,7 +608,9 @@ def _label_qc(samples_dir: Path) -> dict[str, dict[str, dict[str, float | int | 
     return result
 
 
-def _hash_output_files(output: Path, year_rows: dict[int, int], meta_rows: int) -> dict[str, dict[str, Any]]:
+def _hash_output_files(
+    output: Path, year_rows: dict[int, int], meta_rows: int
+) -> dict[str, dict[str, Any]]:
     records: dict[str, dict[str, Any]] = {}
     for path in sorted(output.rglob("*")):
         if not path.is_file() or path.name == "manifest.json":
@@ -528,7 +622,11 @@ def _hash_output_files(output: Path, year_rows: dict[int, int], meta_rows: int) 
             row_count = year_rows.get(year, 0)
         elif path.name == "meta.parquet":
             row_count = meta_rows
-        records[relative] = {"sha256": _sha256(path), "rows": row_count, "bytes": path.stat().st_size}
+        records[relative] = {
+            "sha256": _sha256(path),
+            "rows": row_count,
+            "bytes": path.stat().st_size,
+        }
     return records
 
 
@@ -560,7 +658,9 @@ def build_samples(
     if rank_batch_sessions < 1 or staging_tickers < 1:
         raise ValueError("rank_batch_sessions and staging_tickers must be positive")
     if exclusions_file is None:
-        exclusions_path = Path(__file__).resolve().parents[1] / "config" / "universes" / "exclusions_v1.json"
+        exclusions_path = (
+            Path(__file__).resolve().parents[1] / "config" / "universes" / "exclusions_v1.json"
+        )
     else:
         exclusions_path = Path(exclusions_file)
     exclusions = _load_exclusions(exclusions_path)
@@ -569,14 +669,14 @@ def build_samples(
     stock_directories = sorted(path.name.upper() for path in stocks_dir.iterdir() if path.is_dir())
     ticker_paths = sorted(stocks_dir.glob("*/market.csv"))
     market_ticker_ids = {path.parent.name.upper() for path in ticker_paths}
-    missing_market_ticker_ids = sorted(
-        set(stock_directories) - market_ticker_ids - exclusion_set
-    )
+    missing_market_ticker_ids = sorted(set(stock_directories) - market_ticker_ids - exclusion_set)
     if not ticker_paths:
         raise ValueError(f"no stock market.csv files found under {stocks_dir}")
     ticker_map: dict[str, Path] = {}
     discovered_asset_ids = {path.parent.name.upper() for path in ticker_paths}
-    financial_ticker_count = sum((path.parent / "financials.csv").is_file() for path in ticker_paths)
+    financial_ticker_count = sum(
+        (path.parent / "financials.csv").is_file() for path in ticker_paths
+    )
     first_pass_errors: list[dict[str, str]] = []
     date_counts: dict[pd.Timestamp, int] = {}
     common_tickers = 0
@@ -592,16 +692,24 @@ def build_samples(
             common_tickers += 1
         try:
             dates = pd.read_csv(market_path, usecols=["date"])["date"]
-            parsed = pd.to_datetime(dates, errors="coerce").dropna().dt.normalize().drop_duplicates()
+            parsed = (
+                pd.to_datetime(dates, errors="coerce").dropna().dt.normalize().drop_duplicates()
+            )
             if common:
                 for value in parsed:
                     date_counts[value] = date_counts.get(value, 0) + 1
         except Exception as exc:
-            first_pass_errors.append({"asset_id": asset_id, "stage": "calendar_scan", "error": str(exc)})
+            first_pass_errors.append(
+                {"asset_id": asset_id, "stage": "calendar_scan", "error": str(exc)}
+            )
     if common_tickers == 0:
-        raise ValueError("no non-excluded common-stock tickers are available to form the canonical calendar")
+        raise ValueError(
+            "no non-excluded common-stock tickers are available to form the canonical calendar"
+        )
     minimum_count = canonical_min_tickers
-    calendar_values = sorted(value for value, count in date_counts.items() if count >= minimum_count)
+    calendar_values = sorted(
+        value for value, count in date_counts.items() if count >= minimum_count
+    )
     if not calendar_values:
         raise ValueError(
             f"canonical calendar is empty: no dates meet the absolute floor of {minimum_count} "
@@ -620,7 +728,6 @@ def build_samples(
     failures = list(first_pass_errors)
     meta_records: list[dict[str, Any]] = []
     ticker_items = list(ticker_map.items())
-    output_target_columns = [f"target_return_{horizon}d" for horizon in range(1, 31)]
     year_rows: dict[int, int] = {}
     split_names = ("fit", "select", "screen", "reserve")
     split_rows = {name: 0 for name in split_names}
@@ -638,16 +745,23 @@ def build_samples(
             stage_dir = Path(stage_name)
             for batch_start in range(0, len(ticker_items), staging_tickers):
                 frames: list[pd.DataFrame] = []
-                for asset_id, market_path in ticker_items[batch_start:batch_start + staging_tickers]:
+                for asset_id, market_path in ticker_items[
+                    batch_start : batch_start + staging_tickers
+                ]:
                     financial_path = market_path.with_name("financials.csv")
                     try:
                         frame = _ticker_samples(
-                            asset_id, market_path,
+                            asset_id,
+                            market_path,
                             financial_path if financial_path.is_file() else None,
-                            calendar, macro, _is_common(asset_id),
+                            calendar,
+                            macro,
+                            _is_common(asset_id),
                         )
                     except Exception as exc:
-                        failures.append({"asset_id": asset_id, "stage": "ticker_build", "error": str(exc)})
+                        failures.append(
+                            {"asset_id": asset_id, "stage": "ticker_build", "error": str(exc)}
+                        )
                         logger.exception("Failed to build samples for %s", asset_id)
                         continue
                     if frame.empty:
@@ -655,24 +769,41 @@ def build_samples(
                     purged_splits = frame["date"].map(purge_split_by_date)
                     for split_name, count in purged_splits.value_counts().items():
                         purge_rows_by_split[str(split_name)] += int(count)
-                    pre_purge_split_rows["fit"] += int(frame["date"].le(pd.Timestamp("2018-12-31")).sum())
-                    pre_purge_split_rows["select"] += int(frame["date"].between("2019-01-01", "2020-12-31").sum())
-                    pre_purge_split_rows["screen"] += int(frame["date"].between("2021-01-01", "2024-12-31").sum())
-                    pre_purge_split_rows["reserve"] += int(frame["date"].ge(pd.Timestamp("2025-01-01")).sum())
+                    pre_purge_split_rows["fit"] += int(
+                        frame["date"].le(pd.Timestamp("2018-12-31")).sum()
+                    )
+                    pre_purge_split_rows["select"] += int(
+                        frame["date"].between("2019-01-01", "2020-12-31").sum()
+                    )
+                    pre_purge_split_rows["screen"] += int(
+                        frame["date"].between("2021-01-01", "2024-12-31").sum()
+                    )
+                    pre_purge_split_rows["reserve"] += int(
+                        frame["date"].ge(pd.Timestamp("2025-01-01")).sum()
+                    )
                     frame = frame.loc[purged_splits.isna()].reset_index(drop=True)
                     split_rows["fit"] += int(frame["date"].le(pd.Timestamp("2018-12-31")).sum())
-                    split_rows["select"] += int(frame["date"].between("2019-01-01", "2020-12-31").sum())
-                    split_rows["screen"] += int(frame["date"].between("2021-01-01", "2024-12-31").sum())
+                    split_rows["select"] += int(
+                        frame["date"].between("2019-01-01", "2020-12-31").sum()
+                    )
+                    split_rows["screen"] += int(
+                        frame["date"].between("2021-01-01", "2024-12-31").sum()
+                    )
                     split_rows["reserve"] += int(frame["date"].ge(pd.Timestamp("2025-01-01")).sum())
                     if frame.empty:
                         continue
                     raw_missing = int(frame.loc[:, RAW_FEATURES].isna().to_numpy().sum())
                     raw_total = int(frame.shape[0] * len(RAW_FEATURES))
-                    meta_records.append({
-                        "asset_id": asset_id, "is_common": _is_common(asset_id),
-                        "first_date": frame["date"].min(), "last_date": frame["date"].max(),
-                        "n_rows": int(len(frame)), "missing_frac": raw_missing / raw_total if raw_total else 0.0,
-                    })
+                    meta_records.append(
+                        {
+                            "asset_id": asset_id,
+                            "is_common": _is_common(asset_id),
+                            "first_date": frame["date"].min(),
+                            "last_date": frame["date"].max(),
+                            "n_rows": int(len(frame)),
+                            "missing_frac": raw_missing / raw_total if raw_total else 0.0,
+                        }
+                    )
                     frames.append(frame)
                 if not frames:
                     continue
@@ -682,11 +813,18 @@ def build_samples(
                 chunk_ids = session_positions // rank_batch_sessions
                 combined["_date_chunk"] = chunk_ids.astype(np.int32)
                 for chunk_id, chunk_frame in combined.groupby("_date_chunk", sort=True):
-                    stage_path = stage_dir / f"chunk={int(chunk_id):05d}" / \
-                        f"stage-{batch_start // staging_tickers:05d}.parquet"
+                    stage_path = (
+                        stage_dir
+                        / f"chunk={int(chunk_id):05d}"
+                        / f"stage-{batch_start // staging_tickers:05d}.parquet"
+                    )
                     stage_path.parent.mkdir(parents=True, exist_ok=True)
                     chunk_frame.drop(columns="_date_chunk").to_parquet(
-                        stage_path, engine="pyarrow", compression="snappy", index=False, row_group_size=8192,
+                        stage_path,
+                        engine="pyarrow",
+                        compression="snappy",
+                        index=False,
+                        row_group_size=8192,
                     )
                 del combined, frames
 
@@ -721,15 +859,23 @@ def build_samples(
                 extreme = batch["flag_extreme_label"].eq(1)
                 extreme_return_count += int(extreme.sum())
                 if len(extreme_examples) < 100:
-                    for row in batch.loc[extreme].loc[:, ["date", "asset_id", "target_return_1d"]].head(
-                        100 - len(extreme_examples)
-                    ).itertuples(index=False):
-                        extreme_examples.append({
-                            "date": row.date.strftime("%Y-%m-%d"), "asset_id": row.asset_id,
-                            "target_return_1d": float(row.target_return_1d),
-                        })
+                    for row in (
+                        batch.loc[extreme]
+                        .loc[:, ["date", "asset_id", "target_return_1d"]]
+                        .head(100 - len(extreme_examples))
+                        .itertuples(index=False)
+                    ):
+                        extreme_examples.append(
+                            {
+                                "date": row.date.strftime("%Y-%m-%d"),
+                                "asset_id": row.asset_id,
+                                "target_return_1d": float(row.target_return_1d),
+                            }
+                        )
 
-                batch = batch.sort_values(["date", "asset_id"], kind="mergesort").reset_index(drop=True)
+                batch = batch.sort_values(["date", "asset_id"], kind="mergesort").reset_index(
+                    drop=True
+                )
                 for year, year_frame in batch.groupby(batch["date"].dt.year, sort=True):
                     year = int(year)
                     for column in RAW_FEATURES:
@@ -738,13 +884,23 @@ def build_samples(
                         year_frame[column] = year_frame[column].astype(np.float32)
                     for column in LABELS:
                         year_frame[column] = year_frame[column].astype(np.float32)
-                    column_order = ["date", "asset_id", "is_common", "flag_extreme_label", *RAW_FEATURES,
-                                    *CS_FEATURES, *MISS_FEATURES, *LABELS]
+                    column_order = [
+                        "date",
+                        "asset_id",
+                        "is_common",
+                        "flag_extreme_label",
+                        *RAW_FEATURES,
+                        *CS_FEATURES,
+                        *MISS_FEATURES,
+                        *LABELS,
+                    ]
                     table = _arrow_table(year_frame.loc[:, column_order])
                     destination = output / "samples" / f"year={year}" / "part-00000.parquet"
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     if year not in writers:
-                        writers[year] = pq.ParquetWriter(destination, table.schema, compression="snappy")
+                        writers[year] = pq.ParquetWriter(
+                            destination, table.schema, compression="snappy"
+                        )
                     writers[year].write_table(table)
                     row_count = len(year_frame)
                     year_rows[year] = year_rows.get(year, 0) + row_count
@@ -756,15 +912,23 @@ def build_samples(
 
     if total_rows == 0:
         raise ValueError("sample build produced no rows")
-    meta = pd.DataFrame(meta_records, columns=["asset_id", "is_common", "first_date", "last_date",
-                                               "n_rows", "missing_frac"])
+    meta = pd.DataFrame(
+        meta_records,
+        columns=["asset_id", "is_common", "first_date", "last_date", "n_rows", "missing_frac"],
+    )
     meta = meta.sort_values("asset_id", kind="mergesort").reset_index(drop=True)
     meta_table = pa.Table.from_pandas(meta, preserve_index=False)
     if "first_date" in meta_table.column_names:
-        meta_table = meta_table.set_column(meta_table.schema.get_field_index("first_date"), "first_date",
-                                           pa.array(pd.to_datetime(meta["first_date"]).dt.date, type=pa.date32()))
-        meta_table = meta_table.set_column(meta_table.schema.get_field_index("last_date"), "last_date",
-                                           pa.array(pd.to_datetime(meta["last_date"]).dt.date, type=pa.date32()))
+        meta_table = meta_table.set_column(
+            meta_table.schema.get_field_index("first_date"),
+            "first_date",
+            pa.array(pd.to_datetime(meta["first_date"]).dt.date, type=pa.date32()),
+        )
+        meta_table = meta_table.set_column(
+            meta_table.schema.get_field_index("last_date"),
+            "last_date",
+            pa.array(pd.to_datetime(meta["last_date"]).dt.date, type=pa.date32()),
+        )
     pq.write_table(meta_table, output / "meta.parquet", compression="snappy")
 
     data_start = min(item["first_date"] for item in meta_records).date().isoformat()
@@ -795,11 +959,15 @@ def build_samples(
     label_stats = _label_qc(output / "samples")
     year_cross_sections: dict[str, dict[str, float | int]] = {}
     for year in sorted(year_rows):
-        sizes = [count for date_value, count in cross_section_counts.items() if date_value.year == year]
+        sizes = [
+            count for date_value, count in cross_section_counts.items() if date_value.year == year
+        ]
         if sizes:
             year_cross_sections[str(year)] = {
-                "dates": len(sizes), "min": int(min(sizes)),
-                "median": float(np.median(sizes)), "max": int(max(sizes)),
+                "dates": len(sizes),
+                "min": int(min(sizes)),
+                "median": float(np.median(sizes)),
+                "max": int(max(sizes)),
             }
     missingness = {
         column: {"missing": missing_counts[column], "fraction": missing_counts[column] / total_rows}
@@ -828,44 +996,90 @@ def build_samples(
     }
     _write_json(output / "qc_report.json", qc)
     lines = [
-        "# Training sample build QC report", "", f"- Total rows: {total_rows:,}",
-        f"- Date range: {data_start} through {data_end}", f"- Ticker failures: {len(failures)}", "",
-        "## Rows per year", "", "| Year | Rows |", "|---:|---:|",
+        "# Training sample build QC report",
+        "",
+        f"- Total rows: {total_rows:,}",
+        f"- Date range: {data_start} through {data_end}",
+        f"- Ticker failures: {len(failures)}",
+        "",
+        "## Rows per year",
+        "",
+        "| Year | Rows |",
+        "|---:|---:|",
     ]
     lines.extend(f"| {year} | {count:,} |" for year, count in sorted(year_rows.items()))
-    lines.extend(["", "## Label statistics (clean = excluding flag_extreme_label rows)", "",
-                  "| Label | N | Mean | Std | P50 | P99 | ZeroFrac | N(clean) | Std(clean) | P99(clean) |",
-                  "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"])
+    lines.extend(
+        [
+            "",
+            "## Label statistics (clean = excluding flag_extreme_label rows)",
+            "",
+            "| Label | N | Mean | Std | P50 | P99 | ZeroFrac | N(clean) | Std(clean) | P99(clean) |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
     for column, block in label_stats.items():
         all_s, clean_s = block["all"], block["clean"]
+
         def _render(stats: dict[str, float | int | None]) -> list[str]:
             out = [f"{stats['n']:,}"]
-            out.extend("NA" if stats[key] is None else f"{stats[key]:.6g}" for key in ("mean", "std", "p50", "p99"))
+            out.extend(
+                "NA" if stats[key] is None else f"{stats[key]:.6g}"
+                for key in ("mean", "std", "p50", "p99")
+            )
             return out
+
         row = _render(all_s)
-        row.append("NA" if all_s["exact_zero_fraction"] is None else f"{all_s['exact_zero_fraction']:.4f}")
-        row += [f"{clean_s['n']:,}",
-                "NA" if clean_s["std"] is None else f"{clean_s['std']:.6g}",
-                "NA" if clean_s["p99"] is None else f"{clean_s['p99']:.6g}"]
+        row.append(
+            "NA" if all_s["exact_zero_fraction"] is None else f"{all_s['exact_zero_fraction']:.4f}"
+        )
+        row += [
+            f"{clean_s['n']:,}",
+            "NA" if clean_s["std"] is None else f"{clean_s['std']:.6g}",
+            "NA" if clean_s["p99"] is None else f"{clean_s['p99']:.6g}",
+        ]
         lines.append(f"| {column} | " + " | ".join(row) + " |")
-    lines.extend(["", "## Cross-section size by year", "", "| Year | Dates | Min | Median | Max |",
-                  "|---:|---:|---:|---:|---:|"])
+    lines.extend(
+        [
+            "",
+            "## Cross-section size by year",
+            "",
+            "| Year | Dates | Min | Median | Max |",
+            "|---:|---:|---:|---:|---:|",
+        ]
+    )
     lines.extend(
         f"| {year} | {stats['dates']} | {stats['min']} | {stats['median']:.1f} | {stats['max']} |"
         for year, stats in year_cross_sections.items()
     )
-    lines.extend(["", "## Missingness per feature", "", "| Feature | Missing | Fraction |", "|---|---:|---:|"])
+    lines.extend(
+        [
+            "",
+            "## Missingness per feature",
+            "",
+            "| Feature | Missing | Fraction |",
+            "|---|---:|---:|",
+        ]
+    )
     lines.extend(
         f"| {column} | {stats['missing']:,} | {stats['fraction']:.6%} |"
         for column, stats in missingness.items()
     )
-    lines.extend(["", "## Extreme labels (flag_extreme_label)", "",
-                  f"Flagged rows: {extreme_return_count}. Rule: any 1..30-session label window crosses a "
-                  "source price glitch (consecutive-session adjusted-open ratio outside [0.5, 2.0]). "
-                  "Flagged rows are kept but excluded from excess_5d/21d benchmark means.", ""])
+    lines.extend(
+        [
+            "",
+            "## Extreme labels (flag_extreme_label)",
+            "",
+            f"Flagged rows: {extreme_return_count}. Rule: any 1..30-session label window crosses a "
+            "source price glitch (consecutive-session adjusted-open ratio outside [0.5, 2.0]). "
+            "Flagged rows are kept but excluded from excess_5d/21d benchmark means.",
+            "",
+        ]
+    )
     lines.extend(["## Per-ticker failures", ""])
     if failures:
-        lines.extend(f"- {item['asset_id']} ({item['stage']}): {item['error']}" for item in failures)
+        lines.extend(
+            f"- {item['asset_id']} ({item['stage']}): {item['error']}" for item in failures
+        )
     else:
         lines.append("- None")
     (output / "qc_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -883,7 +1097,9 @@ def build_samples(
             "cross_sectional_features": list(CS_FEATURES),
             "cross_sectional_method": "per-date average rank transformed by inverse normal CDF at (rank - 0.5) / non-null count",
             "cross_sectional_scope": "all included stocks with a non-null stock-varying raw feature on that date; macro columns are excluded because they are date-constant",
-            "missing_indicators": {raw: miss for raw, miss in zip(RAW_FEATURES, MISS_FEATURES, strict=True)},
+            "missing_indicators": {
+                raw: miss for raw, miss in zip(RAW_FEATURES, MISS_FEATURES, strict=True)
+            },
             "macro_differences": "d1 and d5 are exact positional differences on the canonical date axis; no forward-fill",
         },
         "label_semantics": (
@@ -915,9 +1131,9 @@ def build_samples(
             "flag_extreme_label": {
                 "dtype": "uint8",
                 "rule": "1 when any 1..30-session label window (entry t+1 .. exit t+1+h) crosses a source "
-                        "price glitch: consecutive-session adjusted-open ratio outside [0.5, 2.0]",
+                "price glitch: consecutive-session adjusted-open ratio outside [0.5, 2.0]",
                 "handling": "rows are kept; excluded from excess_5d/21d same-date benchmark means; "
-                            "training layer should drop or down-weight them",
+                "training layer should drop or down-weight them",
                 "count": extreme_return_count,
             },
         },
@@ -928,7 +1144,8 @@ def build_samples(
             "is_common is a suffix heuristic; it does not replace security-master classification.",
         ],
         "exclusions_applied": {
-            "file": str(exclusions_path), "asset_ids": exclusions,
+            "file": str(exclusions_path),
+            "asset_ids": exclusions,
             "dropped_asset_ids_present": sorted(exclusion_set.intersection(discovered_asset_ids)),
         },
         "input_inventory": {
@@ -946,8 +1163,14 @@ def build_samples(
     }
     _write_json(output / "manifest.json", manifest)
     logger.info("Built %s sample rows from %s through %s", total_rows, data_start, data_end)
-    return {"rows": total_rows, "date_start": data_start, "date_end": data_end,
-            "year_rows": year_rows, "failures": failures, "output_dir": str(output)}
+    return {
+        "rows": total_rows,
+        "date_start": data_start,
+        "date_end": data_end,
+        "year_rows": year_rows,
+        "failures": failures,
+        "output_dir": str(output),
+    }
 
 
 __all__ = ["build_samples"]

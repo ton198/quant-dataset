@@ -10,9 +10,7 @@ from typing import Any
 
 import pandas as pd
 
-from .errors import OrganizeError
 from .universe import apply_ticker_cik_mapping_overrides
-
 
 # Ordered from the standard/current presentation to narrower or legacy tags.
 # The first tag with a fact for the reported filing period wins.
@@ -74,7 +72,9 @@ def _ticker_mappings(raw_dir: Path) -> tuple[dict[str, str], dict[str, str]]:
     for path in sorted(directory.glob("*.json")) if directory.exists() else []:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-            fields = {str(name).casefold(): index for index, name in enumerate(payload.get("fields", []))}
+            fields = {
+                str(name).casefold(): index for index, name in enumerate(payload.get("fields", []))
+            }
             cik_index, ticker_index = fields.get("cik", 0), fields.get("ticker", 2)
             for row in payload.get("data", []):
                 cik10 = str(row[cik_index]).zfill(10)
@@ -139,8 +139,13 @@ def _build_fact_index(
 
 def _fact_for_period(
     fact_index: dict[str, dict[tuple[str, str], list[dict[str, Any]]]],
-    tag: str, filed: str, fy: Any, fp: Any, end: str,
-    form: str = "", accession_number: str = "",
+    tag: str,
+    filed: str,
+    fy: Any,
+    fp: Any,
+    end: str,
+    form: str = "",
+    accession_number: str = "",
 ) -> dict[str, Any] | None:
     """Return the fact best representing this filing's reported period.
 
@@ -189,20 +194,28 @@ def _fact_for_period(
             duration = 0
         if filing_form == "10-Q" and duration:
             in_quarter_range = 70 <= duration <= 125
-            return (0 if in_quarter_range else 1,
-                    abs(duration - 91) if in_quarter_range else duration, start)
+            return (
+                0 if in_quarter_range else 1,
+                abs(duration - 91) if in_quarter_range else duration,
+                start,
+            )
         if filing_form == "10-K" and duration:
             annual_range = 300 <= duration <= 400
-            return (0 if annual_range else 1,
-                    abs(duration - 365) if annual_range else -duration, start)
+            return (
+                0 if annual_range else 1,
+                abs(duration - 365) if annual_range else -duration,
+                start,
+            )
         return (0, 0, start)
 
     return min(matches, key=preference)
 
 
 def _fiscal_identifiers(
-    filing: dict[str, Any], fiscal_index: dict[tuple[str, str], list[dict[str, Any]]],
-    reported_facts: list[dict[str, Any]], all_filings: list[dict[str, Any]],
+    filing: dict[str, Any],
+    fiscal_index: dict[tuple[str, str], list[dict[str, Any]]],
+    reported_facts: list[dict[str, Any]],
+    all_filings: list[dict[str, Any]],
 ) -> tuple[int | None, str | None]:
     """Get fiscal year/period from a fact covering the report, then SEC metadata.
 
@@ -270,7 +283,8 @@ def _fiscal_identifiers(
     if annual_ends:
         annual_end, annual_year = max(annual_ends)
         quarter_ends = {
-            str(item.get("reportDate", "")) for item in all_filings
+            str(item.get("reportDate", ""))
+            for item in all_filings
             if str(item.get("form", "")).removesuffix("/A") == "10-Q"
             and annual_end < report_end
             and str(item.get("reportDate", "")) <= end
@@ -313,8 +327,10 @@ def _is_column_oriented(payload: dict[str, Any]) -> bool:
     """Cheap shape probe for column-oriented submission page payloads."""
     accessions, filing_dates = payload.get("accessionNumber"), payload.get("filingDate")
     return (
-        isinstance(accessions, list) and isinstance(filing_dates, list)
-        and len(accessions) > 0 and len(accessions) == len(filing_dates)
+        isinstance(accessions, list)
+        and isinstance(filing_dates, list)
+        and len(accessions) > 0
+        and len(accessions) == len(filing_dates)
     )
 
 
@@ -342,13 +358,20 @@ def _submission_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     if isinstance(recent, dict):
         accessions = recent.get("accessionNumber", [])
         for index in range(len(accessions) if isinstance(accessions, list) else 0):
-            filings.append({key: values[index] for key, values in recent.items()
-                            if isinstance(values, list) and len(values) > index})
+            filings.append(
+                {
+                    key: values[index]
+                    for key, values in recent.items()
+                    if isinstance(values, list) and len(values) > index
+                }
+            )
     fields, rows = payload.get("fields", []), payload.get("data", [])
     if isinstance(fields, list) and isinstance(rows, list):
         for row in rows:
             if isinstance(row, list):
-                filings.append({str(key): row[index] for index, key in enumerate(fields) if index < len(row)})
+                filings.append(
+                    {str(key): row[index] for index, key in enumerate(fields) if index < len(row)}
+                )
     if not filings:
         filings.extend(_column_oriented_rows(payload))
     return filings
@@ -361,13 +384,17 @@ def _owned_paths(root: Path, cik10: str) -> list[Path]:
         manifest = {}
     entries = manifest.get("resources", []) if isinstance(manifest, dict) else []
     if isinstance(entries, dict):
-        entries = [{"logical_key": key, **record}
-                   for key, versions in entries.items()
-                   for record in (versions if isinstance(versions, list) else [versions])
-                   if isinstance(record, dict)]
+        entries = [
+            {"logical_key": key, **record}
+            for key, versions in entries.items()
+            for record in (versions if isinstance(versions, list) else [versions])
+            if isinstance(record, dict)
+        ]
     paths = {
-        str(entry.get("path", "")) for entry in entries
-        if isinstance(entry, dict) and (
+        str(entry.get("path", ""))
+        for entry in entries
+        if isinstance(entry, dict)
+        and (
             str(entry.get("logical_key", "")).endswith(cik10)
             or f":{cik10}:" in str(entry.get("logical_key", ""))
         )
@@ -375,14 +402,22 @@ def _owned_paths(root: Path, cik10: str) -> list[Path]:
     result = sorted(root / item for item in paths if item and (root / item).is_file())
     if not result and root.exists():
         result = sorted(
-            path for path in root.glob("*.json")
+            path
+            for path in root.glob("*.json")
             if path.name != "manifest.json" and cik10 in path.name
         )
     return result
 
 
-def _write_meta(path: Path, ticker: str, inputs: list[dict[str, str]],
-                output: Path, organized_dir: Path, rows: int, input_count: int) -> None:
+def _write_meta(
+    path: Path,
+    ticker: str,
+    inputs: list[dict[str, str]],
+    output: Path,
+    organized_dir: Path,
+    rows: int,
+    input_count: int,
+) -> None:
     try:
         meta = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(meta, dict):
@@ -390,32 +425,46 @@ def _write_meta(path: Path, ticker: str, inputs: list[dict[str, str]],
     except (OSError, ValueError):
         meta = {}
     old_inputs = {
-        item.get("path"): item for item in meta.get("inputs", [])
-        if isinstance(item, dict) and (
-            inputs or "sec/financials/" not in str(item.get("path", ""))
-        )
+        item.get("path"): item
+        for item in meta.get("inputs", [])
+        if isinstance(item, dict) and (inputs or "sec/financials/" not in str(item.get("path", "")))
     }
     old_inputs.update({item["path"]: item for item in inputs})
     output_record = {
         "path": str(output.relative_to(organized_dir.parent.parent)),
-        "sha256": _sha256(output), "rows": rows,
+        "sha256": _sha256(output),
+        "rows": rows,
     }
-    old_outputs = {item.get("path"): item for item in meta.get("outputs", []) if isinstance(item, dict)}
+    old_outputs = {
+        item.get("path"): item for item in meta.get("outputs", []) if isinstance(item, dict)
+    }
     old_outputs[output_record["path"]] = output_record
     row_counts = meta.get("row_counts", {})
     if not isinstance(row_counts, dict):
         row_counts = {}
     row_counts.update({"financials_input": input_count, "financials_output": rows})
-    meta.update({"ticker": ticker, "generated_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                 "cleaning_rules_version": "v1", "inputs": list(old_inputs.values()),
-                 "outputs": list(old_outputs.values()), "row_counts": row_counts,
-                 "known_issues": meta.get("known_issues", [])})
+    meta.update(
+        {
+            "ticker": ticker,
+            "generated_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "cleaning_rules_version": "v1",
+            "inputs": list(old_inputs.values()),
+            "outputs": list(old_outputs.values()),
+            "row_counts": row_counts,
+            "known_issues": meta.get("known_issues", []),
+        }
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def organize_financials(cik10: str, raw_dir: Path, organized_dir: Path,
-                         calendar: list[date], output_ticker: str | None = None) -> Path:
+def organize_financials(
+    cik10: str,
+    raw_dir: Path,
+    organized_dir: Path,
+    calendar: list[date],
+    output_ticker: str | None = None,
+) -> Path:
     """As-of join SEC company facts and filing metadata to session dates.
 
     Concept tags are tried in the priority order listed in ``_CONCEPTS``;
@@ -492,7 +541,8 @@ def organize_financials(cik10: str, raw_dir: Path, organized_dir: Path,
             for tag in tags:
                 selected_fact = (
                     _fact_for_period(fact_index, tag, filed, fy, fp, end, form, accession_number)
-                    if end else None
+                    if end
+                    else None
                 )
                 if selected_fact is not None:
                     break
@@ -502,21 +552,37 @@ def organize_financials(cik10: str, raw_dir: Path, organized_dir: Path,
             else:
                 concept_values[output] = None
         fiscal_year, fiscal_period = _fiscal_identifiers(
-            filing, fiscal_index, reported_facts, filings,
+            filing,
+            fiscal_index,
+            reported_facts,
+            filings,
         )
-        report_rows.append({
-            "filed": filed, "available_at": filed,
-            "accession_number": accession_number,
-            "form": form,
-            "is_amendment": form.endswith("/A"),
-            "fiscal_year": fiscal_year, "fiscal_period": fiscal_period,
-            "report_period_end": end, **concept_values,
-        })
+        report_rows.append(
+            {
+                "filed": filed,
+                "available_at": filed,
+                "accession_number": accession_number,
+                "form": form,
+                "is_amendment": form.endswith("/A"),
+                "fiscal_year": fiscal_year,
+                "fiscal_period": fiscal_period,
+                "report_period_end": end,
+                **concept_values,
+            }
+        )
     report_rows.sort(key=lambda item: (item["available_at"], item["accession_number"]))
     report_filed_dates = [date.fromisoformat(item["filed"]) for item in report_rows]
     output_rows: list[dict[str, Any]] = []
-    fields = ("available_at", "accession_number", "form", "is_amendment", "fiscal_year", "fiscal_period",
-              "report_period_end", *_CONCEPTS)
+    fields = (
+        "available_at",
+        "accession_number",
+        "form",
+        "is_amendment",
+        "fiscal_year",
+        "fiscal_period",
+        "report_period_end",
+        *_CONCEPTS,
+    )
     visible_count = 0
     for session in sorted(calendar):
         while visible_count < len(report_rows) and report_filed_dates[visible_count] < session:
@@ -527,25 +593,43 @@ def organize_financials(cik10: str, raw_dir: Path, organized_dir: Path,
             values["days_since_filing"] = (session - report_filed_dates[visible_count - 1]).days
             if selected.get("is_amendment"):
                 prior_original = any(
-                    item.get("available_at") and str(item["available_at"]) < selected["available_at"]
+                    item.get("available_at")
+                    and str(item["available_at"]) < selected["available_at"]
                     and not item.get("is_amendment")
                     and item.get("report_period_end") == selected.get("report_period_end")
                     for item in report_rows
                 )
                 if prior_original:
-                    values["quality_status"] = "ok" if any(
-                        selected.get(key) is not None for key in _CONCEPTS
-                    ) else "missing"
+                    values["quality_status"] = (
+                        "ok"
+                        if any(selected.get(key) is not None for key in _CONCEPTS)
+                        else "missing"
+                    )
                 else:
                     values["quality_status"] = "amendment_only"
             else:
-                values["quality_status"] = "ok" if any(selected.get(key) is not None for key in _CONCEPTS) else "missing"
+                values["quality_status"] = (
+                    "ok" if any(selected.get(key) is not None for key in _CONCEPTS) else "missing"
+                )
         else:
             values = {key: None for key in (*fields, "days_since_filing")}
             values["quality_status"] = "missing"
-        output_rows.append({"date": session, "available_as_of": values.pop("available_at"), **values})
-    columns = ["date", "available_as_of", "accession_number", "form", "is_amendment", "fiscal_year",
-               "fiscal_period", "report_period_end", "days_since_filing", *_CONCEPTS, "quality_status"]
+        output_rows.append(
+            {"date": session, "available_as_of": values.pop("available_at"), **values}
+        )
+    columns = [
+        "date",
+        "available_as_of",
+        "accession_number",
+        "form",
+        "is_amendment",
+        "fiscal_year",
+        "fiscal_period",
+        "report_period_end",
+        "days_since_filing",
+        *_CONCEPTS,
+        "quality_status",
+    ]
     data = pd.DataFrame(output_rows, columns=columns)
     data["fiscal_year"] = pd.array(data["fiscal_year"], dtype="Int64")
     ticker = (output_ticker or _ticker_for_cik(raw_dir, cik10) or cik10).upper()
@@ -559,5 +643,7 @@ def organize_financials(cik10: str, raw_dir: Path, organized_dir: Path,
         except ValueError:
             relative = str(path)
         inputs.append({"path": relative, "sha256": _sha256(path)})
-    _write_meta(output.parent / "_meta.json", ticker, inputs, output, organized_dir, len(data), len(filings))
+    _write_meta(
+        output.parent / "_meta.json", ticker, inputs, output, organized_dir, len(data), len(filings)
+    )
     return output

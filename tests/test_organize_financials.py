@@ -31,7 +31,9 @@ def _financials_root(tmp_path: Path) -> Path:
 
 
 def _write_company_facts_fixture(
-    root: Path, filings: list[dict[str, object]], facts_by_tag: dict[str, list[dict[str, object]]],
+    root: Path,
+    filings: list[dict[str, object]],
+    facts_by_tag: dict[str, list[dict[str, object]]],
     page_filings: list[dict[str, object]] | None = None,
 ) -> None:
     """Write small Company Facts/submissions fixtures under the ownership manifest."""
@@ -41,10 +43,7 @@ def _write_company_facts_fixture(
     facts = {
         "cik": cik,
         "facts": {
-            "us-gaap": {
-                tag: {"units": {"USD": values}}
-                for tag, values in facts_by_tag.items()
-            }
+            "us-gaap": {tag: {"units": {"USD": values}} for tag, values in facts_by_tag.items()}
         },
     }
     submission = {
@@ -69,23 +68,33 @@ def _write_company_facts_fixture(
             for key in ("filingDate", "reportDate", "form", "accessionNumber")
         }
         page_path.write_text(json.dumps(page), encoding="utf-8")
-        resources.append({
-            "logical_key": "submissions-page:0000000042:CIK0000000042-submissions-001.json",
-            "path": page_path.name,
-        })
+        resources.append(
+            {
+                "logical_key": "submissions-page:0000000042:CIK0000000042-submissions-001.json",
+                "path": page_path.name,
+            }
+        )
     (root / "manifest.json").write_text(
-        json.dumps({"resources": resources}), encoding="utf-8",
+        json.dumps({"resources": resources}),
+        encoding="utf-8",
     )
 
 
 def _fact(
-    filing: dict[str, object], value: float, *, start: str | None = None,
-    fy: int | None = None, fp: str | None = None,
+    filing: dict[str, object],
+    value: float,
+    *,
+    start: str | None = None,
+    fy: int | None = None,
+    fp: str | None = None,
 ) -> dict[str, object]:
     """Build a Company Facts value tied to one accession and report date."""
     fact: dict[str, object] = {
-        "filed": filing["filingDate"], "end": filing["reportDate"],
-        "form": filing["form"], "accn": filing["accessionNumber"], "val": value,
+        "filed": filing["filingDate"],
+        "end": filing["reportDate"],
+        "form": filing["form"],
+        "accn": filing["accessionNumber"],
+        "val": value,
     }
     if start is not None:
         fact["start"] = start
@@ -97,7 +106,8 @@ def _fact(
 
 
 def test_owned_paths_manifest_miss_does_not_read_unrelated_json(
-    tmp_path: Path, monkeypatch,
+    tmp_path: Path,
+    monkeypatch,
 ) -> None:
     """A manifest miss only considers filenames and does not read unrelated data."""
     root = _financials_root(tmp_path)
@@ -142,13 +152,25 @@ def test_missing_sec_financials_still_writes_missing_rows_and_empty_provenance(
 
     ticker_meta = tmp_path / "organized" / "stocks" / "0000000042" / "_meta.json"
     ticker_meta.parent.mkdir(parents=True)
-    ticker_meta.write_text(json.dumps({"inputs": [
-        {"path": "data/raw/sec/financials/previously-unrelated.json", "sha256": "stale"},
-        {"path": "data/raw/yahoo/0000000042/prices.csv", "sha256": "valid"},
-    ]}), encoding="utf-8")
+    ticker_meta.write_text(
+        json.dumps(
+            {
+                "inputs": [
+                    {
+                        "path": "data/raw/sec/financials/previously-unrelated.json",
+                        "sha256": "stale",
+                    },
+                    {"path": "data/raw/yahoo/0000000042/prices.csv", "sha256": "valid"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
 
     _reset_ticker_cache()
-    output = organize_financials("0000000042", tmp_path / "raw", tmp_path / "organized", [date(2024, 1, 2)])
+    output = organize_financials(
+        "0000000042", tmp_path / "raw", tmp_path / "organized", [date(2024, 1, 2)]
+    )
     frame = pd.read_csv(output)
     metadata = json.loads(output.parent.joinpath("_meta.json").read_text(encoding="utf-8"))
 
@@ -226,16 +248,28 @@ def test_company_facts_priority_uses_new_and_legacy_concepts_and_emits_periods(
     """Current tags win and legacy tags fill gaps with fact-reported periods."""
     root = _financials_root(tmp_path)
     first = {
-        "filingDate": "2020-01-31", "reportDate": "2019-12-28", "form": "10-Q",
-        "accessionNumber": "first", "fy": None, "fp": None,
+        "filingDate": "2020-01-31",
+        "reportDate": "2019-12-28",
+        "form": "10-Q",
+        "accessionNumber": "first",
+        "fy": None,
+        "fp": None,
     }
     middle = {
-        "filingDate": "2020-05-01", "reportDate": "2020-03-28", "form": "10-Q",
-        "accessionNumber": "middle", "fy": None, "fp": None,
+        "filingDate": "2020-05-01",
+        "reportDate": "2020-03-28",
+        "form": "10-Q",
+        "accessionNumber": "middle",
+        "fy": None,
+        "fp": None,
     }
     second = {
-        "filingDate": "2021-01-30", "reportDate": "2020-10-03", "form": "10-K",
-        "accessionNumber": "second", "fy": None, "fp": None,
+        "filingDate": "2021-01-30",
+        "reportDate": "2020-10-03",
+        "form": "10-K",
+        "accessionNumber": "second",
+        "fy": None,
+        "fp": None,
     }
     facts = {
         "Revenues": [_fact(first, 120, start="2019-09-29", fy=2020, fp="Q1")],
@@ -266,8 +300,11 @@ def test_company_facts_priority_uses_new_and_legacy_concepts_and_emits_periods(
     _write_company_facts_fixture(root, [first, middle, second], facts)
 
     output = organize_financials(
-        "0000000042", tmp_path / "raw", tmp_path / "organized",
-        [date(2020, 2, 1), date(2020, 5, 2), date(2021, 2, 1)], output_ticker="TEST",
+        "0000000042",
+        tmp_path / "raw",
+        tmp_path / "organized",
+        [date(2020, 2, 1), date(2020, 5, 2), date(2021, 2, 1)],
+        output_ticker="TEST",
     )
     frame = pd.read_csv(output)
 
@@ -297,24 +334,39 @@ def test_fiscal_period_fallback_uses_reported_apple_style_fiscal_quarters(
     """When facts omit fy/fp, 10-K dates anchor the non-calendar fiscal year."""
     root = _financials_root(tmp_path)
     annual = {
-        "filingDate": "2024-11-01", "reportDate": "2024-09-28", "form": "10-K",
-        "accessionNumber": "annual", "fy": None, "fp": None,
+        "filingDate": "2024-11-01",
+        "reportDate": "2024-09-28",
+        "form": "10-K",
+        "accessionNumber": "annual",
+        "fy": None,
+        "fp": None,
     }
     quarter = {
-        "filingDate": "2025-01-31", "reportDate": "2024-12-28", "form": "10-Q",
-        "accessionNumber": "quarter", "fy": None, "fp": None,
+        "filingDate": "2025-01-31",
+        "reportDate": "2024-12-28",
+        "form": "10-Q",
+        "accessionNumber": "quarter",
+        "fy": None,
+        "fp": None,
     }
-    _write_company_facts_fixture(root, [annual, quarter], {
-        "SalesRevenueNet": [
-            _fact(annual, 100, start="2023-10-01"),
-            _fact(quarter, 25, start="2024-09-29"),
-            _fact(quarter, 75, start="2023-09-30"),
-        ],
-    })
+    _write_company_facts_fixture(
+        root,
+        [annual, quarter],
+        {
+            "SalesRevenueNet": [
+                _fact(annual, 100, start="2023-10-01"),
+                _fact(quarter, 25, start="2024-09-29"),
+                _fact(quarter, 75, start="2023-09-30"),
+            ],
+        },
+    )
 
     output = organize_financials(
-        "0000000042", tmp_path / "raw", tmp_path / "organized",
-        [date(2024, 11, 2), date(2025, 2, 2)], output_ticker="TEST",
+        "0000000042",
+        tmp_path / "raw",
+        tmp_path / "organized",
+        [date(2024, 11, 2), date(2025, 2, 2)],
+        output_ticker="TEST",
     )
     frame = pd.read_csv(output)
 
@@ -329,14 +381,18 @@ def test_fiscal_period_fallback_uses_reported_apple_style_fiscal_quarters(
 
 def test_submission_rows_parses_recent_table_and_column_page_shapes() -> None:
     """All three raw submission payload shapes assemble into filing row dicts."""
-    recent = {"filings": {"recent": {
-        "accessionNumber": ["r-1", "r-2"],
-        "filingDate": ["2024-02-01", "2024-05-01"],
-        "reportDate": ["2023-12-31", "2024-03-31"],
-        "form": ["10-K", "10-Q"],
-        "fy": [2023, 2024],
-        "fp": ["FY", "Q1"],
-    }}}
+    recent = {
+        "filings": {
+            "recent": {
+                "accessionNumber": ["r-1", "r-2"],
+                "filingDate": ["2024-02-01", "2024-05-01"],
+                "reportDate": ["2023-12-31", "2024-03-31"],
+                "form": ["10-K", "10-Q"],
+                "fy": [2023, 2024],
+                "fp": ["FY", "Q1"],
+            }
+        }
+    }
     table = {
         "fields": ["accessionNumber", "filingDate", "reportDate", "form"],
         "data": [["t-1", "2010-02-26", "2009-12-31", "10-K"]],
@@ -355,8 +411,12 @@ def test_submission_rows_parses_recent_table_and_column_page_shapes() -> None:
     assert recent_rows[0]["fy"] == 2023
 
     assert _submission_rows(table) == [
-        {"accessionNumber": "t-1", "filingDate": "2010-02-26",
-         "reportDate": "2009-12-31", "form": "10-K"}
+        {
+            "accessionNumber": "t-1",
+            "filingDate": "2010-02-26",
+            "reportDate": "2009-12-31",
+            "form": "10-K",
+        }
     ]
 
     page_rows = _submission_rows(page)
@@ -374,9 +434,16 @@ def test_submission_rows_parses_recent_table_and_column_page_shapes() -> None:
 def test_column_oriented_payload_rejects_ragged_arrays() -> None:
     """Mismatched parallel arrays are rejected instead of fabricating rows."""
     assert _submission_rows({"accessionNumber": ["a", "b"], "filingDate": ["2020-01-01"]}) == []
-    assert _submission_rows({
-        "accessionNumber": ["a"], "filingDate": ["2020-01-01"], "form": [],
-    }) == []
+    assert (
+        _submission_rows(
+            {
+                "accessionNumber": ["a"],
+                "filingDate": ["2020-01-01"],
+                "form": [],
+            }
+        )
+        == []
+    )
     assert _submission_rows({"accessionNumber": [], "filingDate": []}) == []
 
 
@@ -386,16 +453,26 @@ def test_page_only_old_filing_fact_becomes_available_at_its_filing_date(
     """A fact reachable only through a historical page appears on the as-of date."""
     root = _financials_root(tmp_path)
     old = {
-        "filingDate": "2010-02-26", "reportDate": "2009-12-31", "form": "10-K",
+        "filingDate": "2010-02-26",
+        "reportDate": "2009-12-31",
+        "form": "10-K",
         "accessionNumber": "old-annual",
     }  # type: dict[str, object]
-    _write_company_facts_fixture(root, [], {
-        "Revenues": [_fact(old, 500, start="2009-01-01", fy=2009, fp="FY")],
-    }, page_filings=[old])
+    _write_company_facts_fixture(
+        root,
+        [],
+        {
+            "Revenues": [_fact(old, 500, start="2009-01-01", fy=2009, fp="FY")],
+        },
+        page_filings=[old],
+    )
 
     output = organize_financials(
-        "0000000042", tmp_path / "raw", tmp_path / "organized",
-        [date(2010, 1, 4), date(2010, 3, 1)], output_ticker="TEST",
+        "0000000042",
+        tmp_path / "raw",
+        tmp_path / "organized",
+        [date(2010, 1, 4), date(2010, 3, 1)],
+        output_ticker="TEST",
     )
     frame = pd.read_csv(output)
     metadata = json.loads(output.parent.joinpath("_meta.json").read_text(encoding="utf-8"))
@@ -415,24 +492,40 @@ def test_overlapping_page_rows_dedupe_prefers_recent_submissions(
     """A page duplicate of a recent accession never overrides the recent entry."""
     root = _financials_root(tmp_path)
     annual = {
-        "filingDate": "2010-02-26", "reportDate": "2009-12-31", "form": "10-K",
-        "accessionNumber": "same-annual", "fy": 2009, "fp": "FY",
+        "filingDate": "2010-02-26",
+        "reportDate": "2009-12-31",
+        "form": "10-K",
+        "accessionNumber": "same-annual",
+        "fy": 2009,
+        "fp": "FY",
     }  # type: dict[str, object]
     other = {
-        "filingDate": "2006-03-01", "reportDate": "2005-12-31", "form": "10-K",
+        "filingDate": "2006-03-01",
+        "reportDate": "2005-12-31",
+        "form": "10-K",
         "accessionNumber": "page-only",
     }  # type: dict[str, object]
     duplicate_from_page = {
-        "filingDate": "2010-02-26", "reportDate": "2010-01-01", "form": "10-K",
+        "filingDate": "2010-02-26",
+        "reportDate": "2010-01-01",
+        "form": "10-K",
         "accessionNumber": "same-annual",
     }  # type: dict[str, object]
-    _write_company_facts_fixture(root, [annual], {
-        "Revenues": [_fact(annual, 500, start="2009-01-01", fy=2009, fp="FY")],
-    }, page_filings=[duplicate_from_page, other])
+    _write_company_facts_fixture(
+        root,
+        [annual],
+        {
+            "Revenues": [_fact(annual, 500, start="2009-01-01", fy=2009, fp="FY")],
+        },
+        page_filings=[duplicate_from_page, other],
+    )
 
     output = organize_financials(
-        "0000000042", tmp_path / "raw", tmp_path / "organized",
-        [date(2010, 3, 1)], output_ticker="TEST",
+        "0000000042",
+        tmp_path / "raw",
+        tmp_path / "organized",
+        [date(2010, 3, 1)],
+        output_ticker="TEST",
     )
     frame = pd.read_csv(output)
     metadata = json.loads(output.parent.joinpath("_meta.json").read_text(encoding="utf-8"))

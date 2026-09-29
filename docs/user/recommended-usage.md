@@ -63,8 +63,14 @@ import pyarrow.dataset as ds
 
 dataset = ds.dataset("data/output/samples", format="parquet", partitioning="hive")
 table = dataset.to_table(
-    columns=["date", "asset_id", "is_common", "flag_extreme_label",
-             "excess_21d", "f_cs_momentum_120"],
+    columns=[
+        "date",
+        "asset_id",
+        "is_common",
+        "flag_extreme_label",
+        "excess_21d",
+        "f_cs_momentum_120",
+    ],
     filter=(ds.field("year") == 2024) & (ds.field("date") >= date(2024, 1, 1)),
 )
 df = table.to_pandas()

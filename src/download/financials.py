@@ -42,32 +42,37 @@ def _manifest_mapping(resources: list[dict[str, Any]]) -> dict[str, list[dict[st
     for record in resources:
         key = str(record.get("logical_key", ""))
         if key:
-            mapped.setdefault(key, []).append({name: value for name, value in record.items() if name != "logical_key"})
+            mapped.setdefault(key, []).append(
+                {name: value for name, value in record.items() if name != "logical_key"}
+            )
     return mapped
 
 
-def _fetch(url: str, user_agent: str, timeout: float, retries: int, rate_limit: float) -> tuple[bytes, int]:
+def _fetch(
+    url: str, user_agent: str, timeout: float, retries: int, rate_limit: float
+) -> tuple[bytes, int]:
     last_error: Exception | None = None
     for attempt in range(max(1, retries)):
         if rate_limit > 0:
             time.sleep(rate_limit)
         response = None
         try:
-            request = urllib.request.Request(url, headers={"User-Agent": user_agent, "Accept": "application/json"})
+            request = urllib.request.Request(
+                url, headers={"User-Agent": user_agent, "Accept": "application/json"}
+            )
             response = urllib.request.urlopen(request, timeout=timeout)
             return response.read(), attempt + 1
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             last_error = exc
             if attempt + 1 < max(1, retries):
-                time.sleep(min(2 ** attempt, 8))
+                time.sleep(min(2**attempt, 8))
         finally:
             if response is not None:
                 response.close()
     raise DownloadError(f"SEC request failed for {url}: {last_error}") from last_error
 
 
-def fetch_financials(cik10: str, cfg: SourcesConfig, secrets: Secrets,
-                     raw_dir: Path) -> list[Path]:
+def fetch_financials(cik10: str, cfg: SourcesConfig, secrets: Secrets, raw_dir: Path) -> list[Path]:
     """Fetch Company Facts, Submissions, and referenced historical submissions."""
     root = raw_dir / "sec" / "financials"
     root.mkdir(parents=True, exist_ok=True)
@@ -78,22 +83,40 @@ def fetch_financials(cik10: str, cfg: SourcesConfig, secrets: Secrets,
         resources = []
     facts_url = cfg.financials.company_facts_url_template.format(cik10=cik10)
     submissions_url = cfg.financials.submissions_url_template.format(cik10=cik10)
-    requests: list[tuple[str, str]] = [(f"companyfacts:{cik10}", facts_url), (f"submissions:{cik10}", submissions_url)]
+    requests: list[tuple[str, str]] = [
+        (f"companyfacts:{cik10}", facts_url),
+        (f"submissions:{cik10}", submissions_url),
+    ]
     written: list[Path] = []
     seen_keys: set[str] = set()
 
     def obtain(logical_key: str, url: str) -> tuple[Path, Any]:
-        matching = [item for item in resources if isinstance(item, dict) and item.get("logical_key") == logical_key and item.get("url") == url]
+        matching = [
+            item
+            for item in resources
+            if isinstance(item, dict)
+            and item.get("logical_key") == logical_key
+            and item.get("url") == url
+        ]
         for item in reversed(matching):
             relative = item.get("path")
             expected = item.get("sha256")
             candidate = root / str(relative) if isinstance(relative, str) else None
-            if candidate and candidate.is_file() and hashlib.sha256(candidate.read_bytes()).hexdigest() == expected:
+            if (
+                candidate
+                and candidate.is_file()
+                and hashlib.sha256(candidate.read_bytes()).hexdigest() == expected
+            ):
                 written.append(candidate)
                 seen_keys.add(logical_key)
                 return candidate, json.loads(candidate.read_text(encoding="utf-8"))
-        content, attempts = _fetch(url, secrets.sec_user_agent, cfg.financials.timeout_seconds,
-                                  cfg.financials.max_retries, cfg.financials.rate_limit_seconds)
+        content, attempts = _fetch(
+            url,
+            secrets.sec_user_agent,
+            cfg.financials.timeout_seconds,
+            cfg.financials.max_retries,
+            cfg.financials.rate_limit_seconds,
+        )
         try:
             payload = json.loads(content.decode("utf-8"))
         except (ValueError, UnicodeDecodeError) as exc:
@@ -103,9 +126,14 @@ def fetch_financials(cik10: str, cfg: SourcesConfig, secrets: Secrets,
         if not destination.exists():
             destination.write_bytes(content)
         record = {
-            "logical_key": logical_key, "path": destination.name, "sha256": digest, "url": url,
+            "logical_key": logical_key,
+            "path": destination.name,
+            "sha256": digest,
+            "url": url,
             "fetched_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            "attempts": attempts, "byte_size": len(content), "status": "done",
+            "attempts": attempts,
+            "byte_size": len(content),
+            "status": "done",
         }
         resources.append(record)
         written.append(destination)
@@ -117,14 +145,22 @@ def fetch_financials(cik10: str, cfg: SourcesConfig, secrets: Secrets,
     files = submissions.get("filings", {}).get("files", []) if isinstance(submissions, dict) else []
     for item in files if isinstance(files, list) else []:
         name = item.get("name") if isinstance(item, dict) else None
-        if isinstance(name, str) and name.startswith(f"CIK{cik10}-submissions-") and name.endswith(".json"):
+        if (
+            isinstance(name, str)
+            and name.startswith(f"CIK{cik10}-submissions-")
+            and name.endswith(".json")
+        ):
             url = "https://data.sec.gov/submissions/" + name
             obtain(f"submissions-page:{cik10}:{name}", url)
     # Cache hits are also returned, so callers can organize existing inputs.
     for logical_key, url in requests:
         if logical_key not in seen_keys:
             for item in reversed(resources):
-                if isinstance(item, dict) and item.get("logical_key") == logical_key and item.get("url") == url:
+                if (
+                    isinstance(item, dict)
+                    and item.get("logical_key") == logical_key
+                    and item.get("url") == url
+                ):
                     path = root / str(item.get("path", ""))
                     if path.is_file():
                         written.append(path)

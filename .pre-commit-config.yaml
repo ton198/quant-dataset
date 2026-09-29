@@ -1,0 +1,8 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Keep the rev in sync with the ruff version used locally / resolved by CI.
+    rev: v0.16.9
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format

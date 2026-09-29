@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any
 
 from .config import Secrets, SourcesConfig
-from .errors import DownloadError
 from .progress import Progress, save_atomic
 
 logger = logging.getLogger(__name__)
@@ -44,12 +43,15 @@ def _manifest_mapping(resources: list[dict[str, Any]]) -> dict[str, list[dict[st
     for record in resources:
         key = str(record.get("logical_key", ""))
         if key:
-            mapped.setdefault(key, []).append({name: value for name, value in record.items() if name != "logical_key"})
+            mapped.setdefault(key, []).append(
+                {name: value for name, value in record.items() if name != "logical_key"}
+            )
     return mapped
 
 
-def fetch_macros(cfg: SourcesConfig, secrets: Secrets,
-                 raw_dir: Path, progress: Progress) -> list[Path]:
+def fetch_macros(
+    cfg: SourcesConfig, secrets: Secrets, raw_dir: Path, progress: Progress
+) -> list[Path]:
     """Download configured series, updating per-series progress as each succeeds."""
     root = raw_dir / "fred"
     root.mkdir(parents=True, exist_ok=True)
@@ -59,16 +61,23 @@ def fetch_macros(cfg: SourcesConfig, secrets: Secrets,
     outputs: list[Path] = []
     for series_id in cfg.macros.series:
         query = {
-            "series_id": series_id, "file_type": cfg.macros.file_type,
+            "series_id": series_id,
+            "file_type": cfg.macros.file_type,
             "observation_start": cfg.macros.observation_start,
         }
         logical_url = cfg.macros.base_url + "?" + urllib.parse.urlencode(query)
         url = logical_url + "&" + urllib.parse.urlencode({"api_key": secrets.fred_api_key})
         cached = None
         for item in reversed(resources):
-            if isinstance(item, dict) and item.get("logical_key") == f"observations:{series_id}" and item.get("url") == logical_url:
+            if (
+                isinstance(item, dict)
+                and item.get("logical_key") == f"observations:{series_id}"
+                and item.get("url") == logical_url
+            ):
                 candidate = root / str(item.get("path", ""))
-                if candidate.is_file() and hashlib.sha256(candidate.read_bytes()).hexdigest() == item.get("sha256"):
+                if candidate.is_file() and hashlib.sha256(
+                    candidate.read_bytes()
+                ).hexdigest() == item.get("sha256"):
                     cached = candidate
                     break
         if cached is not None:
@@ -92,21 +101,35 @@ def fetch_macros(cfg: SourcesConfig, secrets: Secrets,
                 destination = directory / f"{digest}.json"
                 if not destination.exists():
                     destination.write_bytes(content)
-                resources.append({
-                    "logical_key": f"observations:{series_id}", "path": str(destination.relative_to(root)),
-                    "sha256": digest, "url": logical_url,
-                    "fetched_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                    "attempts": attempt + 1, "byte_size": len(content), "status": "done",
-                })
+                resources.append(
+                    {
+                        "logical_key": f"observations:{series_id}",
+                        "path": str(destination.relative_to(root)),
+                        "sha256": digest,
+                        "url": logical_url,
+                        "fetched_at_utc": datetime.now(timezone.utc)
+                        .isoformat()
+                        .replace("+00:00", "Z"),
+                        "attempts": attempt + 1,
+                        "byte_size": len(content),
+                        "status": "done",
+                    }
+                )
                 outputs.append(destination)
                 progress.stages.setdefault("macros", {})[series_id] = "done"
                 save_atomic(progress, cfg.progress_file, cfg.progress_tmp_file)
                 last_error = None
                 break
-            except (urllib.error.URLError, TimeoutError, OSError, ValueError, UnicodeDecodeError) as exc:
+            except (
+                urllib.error.URLError,
+                TimeoutError,
+                OSError,
+                ValueError,
+                UnicodeDecodeError,
+            ) as exc:
                 last_error = exc
                 if attempt + 1 < max(1, cfg.macros.max_retries):
-                    time.sleep(min(2 ** attempt, 8))
+                    time.sleep(min(2**attempt, 8))
             finally:
                 if response is not None:
                     response.close()

@@ -43,8 +43,14 @@ def _output_record(path: Path, organized_dir: Path, rows: int) -> dict[str, Any]
     return {"path": relative, "sha256": _sha256(path), "rows": rows}
 
 
-def _write_meta(path: Path, ticker: str, inputs: list[dict[str, str]], outputs: list[dict[str, Any]],
-                row_counts: dict[str, int], known_issues: list[str] | None = None) -> None:
+def _write_meta(
+    path: Path,
+    ticker: str,
+    inputs: list[dict[str, str]],
+    outputs: list[dict[str, Any]],
+    row_counts: dict[str, int],
+    known_issues: list[str] | None = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -52,20 +58,30 @@ def _write_meta(path: Path, ticker: str, inputs: list[dict[str, str]], outputs: 
             payload = {}
     except (OSError, ValueError):
         payload = {}
-    merged_inputs = {item.get("path"): item for item in payload.get("inputs", []) if isinstance(item, dict)}
+    merged_inputs = {
+        item.get("path"): item for item in payload.get("inputs", []) if isinstance(item, dict)
+    }
     merged_inputs.update({item["path"]: item for item in inputs})
-    merged_outputs = {item.get("path"): item for item in payload.get("outputs", []) if isinstance(item, dict)}
+    merged_outputs = {
+        item.get("path"): item for item in payload.get("outputs", []) if isinstance(item, dict)
+    }
     merged_outputs.update({item["path"]: item for item in outputs})
     counts = payload.get("row_counts", {})
     if not isinstance(counts, dict):
         counts = {}
     counts.update(row_counts)
     issues = list(dict.fromkeys([*payload.get("known_issues", []), *(known_issues or [])]))
-    payload.update({
-        "ticker": ticker, "generated_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "cleaning_rules_version": "v1", "inputs": list(merged_inputs.values()),
-        "outputs": list(merged_outputs.values()), "row_counts": counts, "known_issues": issues,
-    })
+    payload.update(
+        {
+            "ticker": ticker,
+            "generated_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "cleaning_rules_version": "v1",
+            "inputs": list(merged_inputs.values()),
+            "outputs": list(merged_outputs.values()),
+            "row_counts": counts,
+            "known_issues": issues,
+        }
+    )
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
@@ -79,7 +95,9 @@ def write_meta(ticker: str, organized_dir: Path, meta: dict[str, Any]) -> Path:
 
 def _market_quality(row: pd.Series) -> str:
     try:
-        open_, high, low, close, volume = (float(row[name]) for name in ("open", "high", "low", "close", "volume"))
+        open_, high, low, close, volume = (
+            float(row[name]) for name in ("open", "high", "low", "close", "volume")
+        )
     except (KeyError, TypeError, ValueError):
         return "invalid_ohlc"
     if close < 0 or open_ < 0 or high < 0 or low < 0:
@@ -91,25 +109,37 @@ def _market_quality(row: pd.Series) -> str:
     return "ok"
 
 
-def organize_market(ticker: str, raw_dir: Path, organized_dir: Path,
-                    calendar: list[date]) -> Path | None:
+def organize_market(
+    ticker: str, raw_dir: Path, organized_dir: Path, calendar: list[date]
+) -> Path | None:
     """Clean and derive daily market fields when Yahoo data is available."""
     directory = raw_dir / "yahoo" / ticker.upper()
     files = sorted(directory.glob("*.csv")) if directory.exists() else []
     if not files:
-        logger.info("Skipping market organization for %s: no Yahoo CSV found in %s", ticker, directory)
+        logger.info(
+            "Skipping market organization for %s: no Yahoo CSV found in %s", ticker, directory
+        )
         return None
     try:
         frames = [pd.read_csv(path) for path in files]
         for frame_part in frames:
-            frame_part.columns = [str(name).strip().casefold().replace(" ", "_") for name in frame_part.columns]
+            frame_part.columns = [
+                str(name).strip().casefold().replace(" ", "_") for name in frame_part.columns
+            ]
         frame = pd.concat(frames, ignore_index=True)
         names = {str(name).strip().casefold().replace(" ", "_"): name for name in frame.columns}
         date_col = names.get("date") or names.get("datetime")
         if date_col is None:
             raise OrganizeError(f"Market input for {ticker} has no date column")
-        aliases = {"open": "open", "high": "high", "low": "low", "close": "close",
-                   "adj_close": "adj_close", "adjclose": "adj_close", "volume": "volume"}
+        aliases = {
+            "open": "open",
+            "high": "high",
+            "low": "low",
+            "close": "close",
+            "adj_close": "adj_close",
+            "adjclose": "adj_close",
+            "volume": "volume",
+        }
         selected: dict[str, Any] = {}
         for key, target in aliases.items():
             if key in names:
@@ -120,7 +150,11 @@ def organize_market(ticker: str, raw_dir: Path, organized_dir: Path,
                 raise OrganizeError(f"Market input for {ticker} is missing {column}")
         data["date"] = pd.to_datetime(frame[date_col], errors="coerce").dt.date
         data["adj_close"] = data.get("adj_close", data["close"])
-        data = data.dropna(subset=["date"]).sort_values("date").drop_duplicates(subset=["date"], keep="last")
+        data = (
+            data.dropna(subset=["date"])
+            .sort_values("date")
+            .drop_duplicates(subset=["date"], keep="last")
+        )
         input_count = len(data)
         data = data[data["date"].isin(set(calendar))].copy()
         dropped = input_count - len(data)
@@ -134,11 +168,27 @@ def organize_market(ticker: str, raw_dir: Path, organized_dir: Path,
         data["return_20d"] = close.pct_change(20)
         data["volatility_20"] = returns.rolling(20).std()
         data["volume_ratio_20"] = volume / volume.rolling(20).mean()
-        data["intraday_range"] = (pd.to_numeric(data["high"], errors="coerce") -
-                                   pd.to_numeric(data["low"], errors="coerce")) / close
-        columns = ["date", "open", "high", "low", "close", "adj_close", "volume", "adjustment_factor",
-                   "return_1d", "return_5d", "return_20d", "volatility_20", "volume_ratio_20",
-                   "intraday_range", "quality_flag"]
+        data["intraday_range"] = (
+            pd.to_numeric(data["high"], errors="coerce")
+            - pd.to_numeric(data["low"], errors="coerce")
+        ) / close
+        columns = [
+            "date",
+            "open",
+            "high",
+            "low",
+            "close",
+            "adj_close",
+            "volume",
+            "adjustment_factor",
+            "return_1d",
+            "return_5d",
+            "return_20d",
+            "volatility_20",
+            "volume_ratio_20",
+            "intraday_range",
+            "quality_flag",
+        ]
         data = data[columns].sort_values("date")
     except OrganizeError:
         raise
@@ -147,14 +197,21 @@ def organize_market(ticker: str, raw_dir: Path, organized_dir: Path,
     output = organized_dir / "stocks" / ticker.upper() / "market.csv"
     output.parent.mkdir(parents=True, exist_ok=True)
     data.to_csv(output, index=False, date_format="%Y-%m-%d")
-    _write_meta(output.parent / "_meta.json", ticker.upper(), [_input_record(path, raw_dir) for path in files],
-                [_output_record(output, organized_dir, len(data))],
-                {"market_input": input_count, "market_output": len(data), "market_dropped_non_session": dropped})
+    _write_meta(
+        output.parent / "_meta.json",
+        ticker.upper(),
+        [_input_record(path, raw_dir) for path in files],
+        [_output_record(output, organized_dir, len(data))],
+        {
+            "market_input": input_count,
+            "market_output": len(data),
+            "market_dropped_non_session": dropped,
+        },
+    )
     return output
 
 
-def organize_macros(raw_dir: Path, organized_dir: Path,
-                    calendar: list[date]) -> Path:
+def organize_macros(raw_dir: Path, organized_dir: Path, calendar: list[date]) -> Path:
     """Build a session-aligned wide FRED matrix with conservative release dates."""
     root = raw_dir / "fred"
     records: dict[str, dict[date, float]] = {}
@@ -171,8 +228,17 @@ def organize_macros(raw_dir: Path, organized_dir: Path,
                         month_index = reference.year * 12 + reference.month
                         year, month_zero = divmod(month_index, 12)
                         month = month_zero + 1
-                        approximate_release = date(year, month, min(reference.day, pycalendar.monthrange(year, month)[1]))
-                        visible = next((session for session in sorted(calendar) if session > approximate_release), None)
+                        approximate_release = date(
+                            year, month, min(reference.day, pycalendar.monthrange(year, month)[1])
+                        )
+                        visible = next(
+                            (
+                                session
+                                for session in sorted(calendar)
+                                if session > approximate_release
+                            ),
+                            None,
+                        )
                         if visible is not None:
                             parsed[visible] = float(observation["value"])
                     except (KeyError, TypeError, ValueError):
@@ -189,7 +255,14 @@ def organize_macros(raw_dir: Path, organized_dir: Path,
     output = organized_dir / "shared" / "macro.csv"
     output.parent.mkdir(parents=True, exist_ok=True)
     data.to_csv(output, index=False, date_format="%Y-%m-%d")
-    _write_meta(output.parent / "_meta.json", "shared", inputs,
-                [_output_record(output, organized_dir, len(data))], {"macro_output": len(data)},
-                ["FRED observations are treated as visible after reference period + one month + one session; response omits release timestamps."])
+    _write_meta(
+        output.parent / "_meta.json",
+        "shared",
+        inputs,
+        [_output_record(output, organized_dir, len(data))],
+        {"macro_output": len(data)},
+        [
+            "FRED observations are treated as visible after reference period + one month + one session; response omits release timestamps."
+        ],
+    )
     return output

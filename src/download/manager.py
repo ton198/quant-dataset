@@ -25,16 +25,21 @@ def _with_data_dir(cfg: SourcesConfig, data_dir: Path | None, repo_root: Path) -
     if data_dir is None:
         return cfg
     base = data_dir if data_dir.is_absolute() else repo_root / data_dir
-    return replace(cfg, raw_dir=base / "raw", organized_dir=base / "organized",
-                   progress_file=base / ".download_progress",
-                   progress_tmp_file=base / ".download_progress.tmp",
-                   progress_lock_file=base / ".download_progress.lock")
+    return replace(
+        cfg,
+        raw_dir=base / "raw",
+        organized_dir=base / "organized",
+        progress_file=base / ".download_progress",
+        progress_tmp_file=base / ".download_progress.tmp",
+        progress_lock_file=base / ".download_progress.lock",
+    )
 
 
 def _calendar(start: date, end: date) -> list[date]:
     try:
         import exchange_calendars as xcals
         import pandas as pd
+
         # Pass start/end to get_calendar() so the calendar is generated for the
         # requested range. Calling get_calendar("XNYS") without arguments uses a
         # default range (~2006-2027) that cannot reach back to 1990.
@@ -49,7 +54,11 @@ def _calendar(start: date, end: date) -> list[date]:
 
 def _raw_tickers(raw_dir: Path) -> list[str]:
     directory = raw_dir / "yahoo"
-    return sorted(path.name.upper() for path in directory.iterdir() if path.is_dir()) if directory.exists() else []
+    return (
+        sorted(path.name.upper() for path in directory.iterdir() if path.is_dir())
+        if directory.exists()
+        else []
+    )
 
 
 def _cached_universe(cfg: SourcesConfig) -> list[universe.TickerRow]:
@@ -79,7 +88,10 @@ def _initialize_organize_worker(session_calendar: list[date]) -> None:
 
 
 def _organize_ticker_worker(
-    ticker: str, cik10: str | None, raw_dir: Path, organized_dir: Path,
+    ticker: str,
+    cik10: str | None,
+    raw_dir: Path,
+    organized_dir: Path,
 ) -> tuple[str, list[tuple[str, str]]]:
     """Organize one ticker, returning isolated operation errors to the parent."""
     errors: list[tuple[str, str]] = []
@@ -97,15 +109,20 @@ def _organize_ticker_worker(
         errors.append(("market", str(exc)))
     if cik10:
         try:
-            organize.organize_financials(cik10, raw_dir, organized_dir,
-                                         _ORGANIZE_SESSION_CALENDAR, output_ticker=ticker)
+            organize.organize_financials(
+                cik10, raw_dir, organized_dir, _ORGANIZE_SESSION_CALENDAR, output_ticker=ticker
+            )
         except Exception as exc:
             errors.append(("financials", str(exc)))
     return ticker, errors
 
 
 def _ticker_is_organized(
-    ticker: str, raw_dir: Path, organized_dir: Path, *, require_financials: bool,
+    ticker: str,
+    raw_dir: Path,
+    organized_dir: Path,
+    *,
+    require_financials: bool,
 ) -> bool:
     """Return true only when metadata and all expected ticker outputs are present."""
     ticker = ticker.upper()
@@ -141,8 +158,14 @@ def _ticker_is_organized(
 
 
 def _organize_tickers(
-    tickers: list[str], by_ticker: dict[str, universe.TickerRow], raw_dir: Path,
-    organized_dir: Path, session_calendar: list[date], workers: int, *, force_rebuild: bool = False,
+    tickers: list[str],
+    by_ticker: dict[str, universe.TickerRow],
+    raw_dir: Path,
+    organized_dir: Path,
+    session_calendar: list[date],
+    workers: int,
+    *,
+    force_rebuild: bool = False,
 ) -> tuple[int, int, int]:
     """Run per-ticker organization, optionally regenerating complete existing outputs."""
     succeeded = skipped = failed = 0
@@ -151,7 +174,10 @@ def _organize_tickers(
         record = by_ticker.get(ticker)
         cik10 = record.cik10 if record else None
         if not force_rebuild and _ticker_is_organized(
-            ticker, raw_dir, organized_dir, require_financials=bool(cik10),
+            ticker,
+            raw_dir,
+            organized_dir,
+            require_financials=bool(cik10),
         ):
             skipped += 1
         else:
@@ -160,12 +186,14 @@ def _organize_tickers(
     if todo:
         futures = {}
         with ProcessPoolExecutor(
-            max_workers=workers, initializer=_initialize_organize_worker,
+            max_workers=workers,
+            initializer=_initialize_organize_worker,
             initargs=(session_calendar,),
         ) as executor:
             for ticker, cik10 in todo:
-                future = executor.submit(_organize_ticker_worker, ticker, cik10,
-                                         raw_dir, organized_dir)
+                future = executor.submit(
+                    _organize_ticker_worker, ticker, cik10, raw_dir, organized_dir
+                )
                 futures[future] = ticker
             for future in as_completed(futures):
                 ticker = futures[future]
@@ -176,13 +204,21 @@ def _organize_tickers(
                 if errors:
                     failed += 1
                     for operation, error in errors:
-                        logger.error("%s organization failed for %s: %s",
-                                     operation.capitalize(), ticker, error)
+                        logger.error(
+                            "%s organization failed for %s: %s",
+                            operation.capitalize(),
+                            ticker,
+                            error,
+                        )
                 else:
                     succeeded += 1
 
-    logger.info("Ticker organization complete: succeeded=%d skipped=%d failed=%d",
-                succeeded, skipped, failed)
+    logger.info(
+        "Ticker organization complete: succeeded=%d skipped=%d failed=%d",
+        succeeded,
+        skipped,
+        failed,
+    )
     return succeeded, skipped, failed
 
 
@@ -217,21 +253,38 @@ def run_download(
         needs_universe = "financials" in stages or ("market" in stages and tickers is None)
         secrets = load_secrets(repo_root) if needs_universe or "macros" in stages else None
         with progress.acquire_lock(cfg.progress_lock_file):
-            rows = (universe.fetch_universe(cfg, secrets) if needs_universe and secrets is not None
-                    else _cached_universe(cfg) if "organize" in stages else [])
+            rows = (
+                universe.fetch_universe(cfg, secrets)
+                if needs_universe and secrets is not None
+                else _cached_universe(cfg)
+                if "organize" in stages
+                else []
+            )
             by_ticker = {item.ticker: item for item in rows}
-            selected_tickers = [item.upper() for item in tickers] if tickers is not None else [item.ticker for item in rows]
+            selected_tickers = (
+                [item.upper() for item in tickers]
+                if tickers is not None
+                else [item.ticker for item in rows]
+            )
             # Only fall back to "whatever is already in raw/" when running an
             # organize-only pass. If market or financials are also in stages we
             # must keep the universe so those stages can fetch the full set.
             wants_ticker_downloads = "market" in stages or "financials" in stages
-            if "organize" in stages and not wants_ticker_downloads and (tickers is None or not selected_tickers):
+            if (
+                "organize" in stages
+                and not wants_ticker_downloads
+                and (tickers is None or not selected_tickers)
+            ):
                 selected_tickers = _raw_tickers(cfg.raw_dir)
                 if needs_universe:
                     by_ticker = {item.ticker: item for item in rows}
-            unknown = [item for item in selected_tickers if needs_universe and item not in by_ticker]
+            unknown = [
+                item for item in selected_tickers if needs_universe and item not in by_ticker
+            ]
             if unknown:
-                logger.warning("Ignoring tickers absent from the SEC universe: %s", ", ".join(unknown))
+                logger.warning(
+                    "Ignoring tickers absent from the SEC universe: %s", ", ".join(unknown)
+                )
                 selected_tickers = [item for item in selected_tickers if item in by_ticker]
             macro_items = list(cfg.macros.series) if "macros" in stages else []
             progress_stages: dict[str, list[str]] = {}
@@ -240,8 +293,14 @@ def run_download(
                     progress_stages[stage] = list(selected_tickers)
             if "macros" in stages:
                 progress_stages["macros"] = macro_items
-            state = progress.initialize(progress_stages, cfg.universe.source, force,
-                                        cfg.progress_file, cfg.progress_tmp_file, cfg.progress_lock_file)
+            state = progress.initialize(
+                progress_stages,
+                cfg.universe.source,
+                force,
+                cfg.progress_file,
+                cfg.progress_tmp_file,
+                cfg.progress_lock_file,
+            )
             failures = 0
             if "market" in stages:
                 assert start is not None and end is not None
@@ -253,7 +312,9 @@ def run_download(
                         logger.error("Market download failed for %s: %s", ticker, exc)
                         output = None
                     if output is None:
-                        progress.mark_failed(state, "market", ticker, "empty or failed Yahoo download")
+                        progress.mark_failed(
+                            state, "market", ticker, "empty or failed Yahoo download"
+                        )
                         failures += 1
                     else:
                         progress.mark_done(state, "market", ticker)
@@ -270,7 +331,9 @@ def run_download(
                     else:
                         try:
                             assert secrets is not None
-                            result = financials.fetch_financials(record.cik10, cfg, secrets, cfg.raw_dir)
+                            result = financials.fetch_financials(
+                                record.cik10, cfg, secrets, cfg.raw_dir
+                            )
                             if not result:
                                 raise DownloadError("SEC produced no financial payload")
                             progress.mark_done(state, "financials", ticker)
@@ -298,8 +361,13 @@ def run_download(
                 calendar_end = end or date.today()
                 session_calendar = _calendar(calendar_start, calendar_end)
                 _, _, organize_failures = _organize_tickers(
-                    selected_tickers, by_ticker, cfg.raw_dir, cfg.organized_dir,
-                    session_calendar, workers, force_rebuild=force_rebuild,
+                    selected_tickers,
+                    by_ticker,
+                    cfg.raw_dir,
+                    cfg.organized_dir,
+                    session_calendar,
+                    workers,
+                    force_rebuild=force_rebuild,
                 )
                 failures += organize_failures
                 try:

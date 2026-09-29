@@ -1,5 +1,7 @@
 # quant-dataset
 
+[![CI](https://github.com/ton198/quant-dataset/actions/workflows/ci.yml/badge.svg)](https://github.com/ton198/quant-dataset/actions/workflows/ci.yml)
+
 准备并发布**冻结量化数据集**的数据仓库与准备库：负责下载（SEC / Yahoo / FRED）、清洗组织、并构建可复现的训练样本长表。本仓库**不做模型训练**，也不提供回测框架；训练、评估代码属于下游仓库。
 
 "冻结"的含义：`data/output/` 下的每个产物都在 `manifest.json` 中登记 sha256，schema 版本为 `samples_v1`，下游按固定 schema 消费，重建后应逐字节校验。
@@ -87,6 +89,7 @@ PY
 | [docs/user/data-format.md](docs/user/data-format.md) | 输出文件清单、147 列定义、标签公式、splits/purge、manifest 字段 |
 | [docs/user/recommended-usage.md](docs/user/recommended-usage.md) | 训练侧五步流程、duckdb/pyarrow 加载示例、偏差与常见坑 |
 | [AGENT.md](AGENT.md) | 开发者与 agent 入口：模块结构、内部约定、测试与扩展方式 |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 贡献指南：开发环境、提交前检查（ruff / pytest）与 PR 流程 |
 
 ## 仓库布局
 
@@ -102,7 +105,7 @@ PY
 
 ## 运行前提
 
-- Python ≥3.10；依赖见 `pyproject.toml`（pyarrow / pandas / numpy / exchange-calendars / yfinance / torch）。
+- Python ≥3.10；依赖见 `pyproject.toml`（pyarrow / pandas / numpy / exchange-calendars / yfinance；torch 为可选 `train` extra，当前代码未使用）。
 - 联网访问 Yahoo、SEC、FRED；SEC 要求 User-Agent，FRED 要求 API key。
 - 单测：`.venv/bin/python -m pytest`。
 - 重建产物前先读 [docs/user/recommended-usage.md](docs/user/recommended-usage.md) 的"常见坑"；`build-samples` 会清空并重建 `data/output/`。

@@ -1,11 +1,15 @@
 [build-system]
-requires = ["setuptools>=68"]
+# setuptools>=77 is required for the SPDX `license = "MIT"` expression (PEP 639).
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "quant-dataset"
 version = "0.1.0"
 description = "Preparation and publication utilities for frozen quantitative datasets"
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Tony Li" }]
 requires-python = ">=3.10"
 dependencies = [
     "exchange-calendars==4.11.3",
@@ -13,18 +17,47 @@ dependencies = [
     "pandas",
     "yfinance==0.2.66",
     "tomli>=2.0; python_version < '3.11'",
-    "torch>=2.14.0",
     "pyarrow>=25.0.1",
 ]
 
+[project.optional-dependencies]
+dev = ["ruff", "pytest"]
+# torch is not imported anywhere in src/ or tests/; it is only needed by downstream
+# training repos, so it lives behind the `train` extra.
+train = ["torch>=2.14.0"]
+
 [project.scripts]
 quant-dataset = "cli.main:main"
+
+[tool.setuptools]
+# src/build_samples.py is a top-level module (not a package); `packages.find` alone
+# would omit it from wheels/editable installs.
+py-modules = ["build_samples"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests bootstrap `src/` onto sys.path before importing the pipeline modules.
+"tests/*" = ["E402"]
+# These modules embed single-line human-readable contract strings that are published
+# verbatim into manifest.json / qc_report outputs; wrapping them is a content change,
+# not a mechanical reformat.
+"src/build_samples.py" = ["E501"]
+# organize_financials is an intentional re-export consumed as
+# `download.organize.organize_financials` by manager.py and tests; without the F401
+# ignore ruff would delete a public attribute.
+"src/download/organize.py" = ["E501", "F401"]
 
 [tool.unittest]
 test_discovery = "tests"

@@ -33,7 +33,6 @@ from download.progress import (
     save_atomic,
 )
 
-
 # config.py
 
 
@@ -92,7 +91,9 @@ def test_load_sources_parses_provider_settings() -> None:
 def test_progress_atomic_save_and_load_round_trip(tmp_path: Path) -> None:
     """Persist and reload every progress field without changing its value."""
     original = Progress(
-        "run-1", "2020-01-01T00:00:00Z", "test-universe",
+        "run-1",
+        "2020-01-01T00:00:00Z",
+        "test-universe",
         {"market": {"ABC": "done", "XYZ": "failed:offline"}},
     )
     path = tmp_path / "progress.json"
@@ -112,8 +113,12 @@ def test_initialize_force_replaces_existing_work_list(tmp_path: Path) -> None:
     )
 
     fresh = initialize(
-        {"market": ["NEW"]}, "new-source", True, path,
-        tmp_path / "progress.tmp", tmp_path / "progress.lock",
+        {"market": ["NEW"]},
+        "new-source",
+        True,
+        path,
+        tmp_path / "progress.tmp",
+        tmp_path / "progress.lock",
     )
 
     assert fresh.run_id != "old"
@@ -128,8 +133,12 @@ def test_initialize_resumes_existing_work_list(tmp_path: Path) -> None:
     save_atomic(original, path, tmp_path / "progress.tmp")
 
     resumed = initialize(
-        {"market": ["DONE", "NEW"]}, "", False, path,
-        tmp_path / "progress.tmp", tmp_path / "progress.lock",
+        {"market": ["DONE", "NEW"]},
+        "",
+        False,
+        path,
+        tmp_path / "progress.tmp",
+        tmp_path / "progress.lock",
     )
 
     assert resumed.run_id == "run-1"
@@ -156,10 +165,15 @@ def test_mark_failed_records_reason() -> None:
 
 def test_pending_returns_unfinished_items_for_stage() -> None:
     """Return pending work for one stage while excluding completed items."""
-    state = Progress("run", "time", "source", {
-        "market": {"WAIT": "pending", "DONE": "done", "RETRY": "failed:timeout"},
-        "macros": {"SERIES": "pending"},
-    })
+    state = Progress(
+        "run",
+        "time",
+        "source",
+        {
+            "market": {"WAIT": "pending", "DONE": "done", "RETRY": "failed:timeout"},
+            "macros": {"SERIES": "pending"},
+        },
+    )
 
     assert pending(state, "market") == ["WAIT", "RETRY"]
 
@@ -184,19 +198,31 @@ def _write_market_csv(raw_dir: Path, rows: list[dict[str, object]]) -> None:
     pd.DataFrame(rows).to_csv(source / "prices.csv", index=False)
 
 
-def _bar(day: str, *, open_: float = 10, high: float = 12, low: float = 9,
-        close: float = 11, adj_close: float | None = None,
-        volume: float = 100) -> dict[str, object]:
+def _bar(
+    day: str,
+    *,
+    open_: float = 10,
+    high: float = 12,
+    low: float = 9,
+    close: float = 11,
+    adj_close: float | None = None,
+    volume: float = 100,
+) -> dict[str, object]:
     """Return one simple Yahoo-shaped daily OHLCV bar."""
     return {
-        "Date": day, "Open": open_, "High": high, "Low": low,
-        "Close": close, "Adj Close": close if adj_close is None else adj_close,
+        "Date": day,
+        "Open": open_,
+        "High": high,
+        "Low": low,
+        "Close": close,
+        "Adj Close": close if adj_close is None else adj_close,
         "Volume": volume,
     }
 
 
-def _organize_bars(tmp_path: Path, rows: list[dict[str, object]],
-                   calendar: list[date]) -> pd.DataFrame:
+def _organize_bars(
+    tmp_path: Path, rows: list[dict[str, object]], calendar: list[date]
+) -> pd.DataFrame:
     """Organize fixture rows and return the generated market frame."""
     raw_dir = tmp_path / "raw"
     organized_dir = tmp_path / "organized"
@@ -207,9 +233,7 @@ def _organize_bars(tmp_path: Path, rows: list[dict[str, object]],
 
 def test_market_valid_ohlc_row_is_flagged_ok(tmp_path: Path) -> None:
     """A valid OHLCV bar receives the ok quality flag."""
-    result = _organize_bars(
-        tmp_path, [_bar("2020-01-02")], [date(2020, 1, 2)]
-    )
+    result = _organize_bars(tmp_path, [_bar("2020-01-02")], [date(2020, 1, 2)])
 
     assert result.loc[0, "quality_flag"] == "ok"
 
@@ -217,7 +241,8 @@ def test_market_valid_ohlc_row_is_flagged_ok(tmp_path: Path) -> None:
 def test_market_invalid_high_is_flagged(tmp_path: Path) -> None:
     """A high below another OHLC value is classified as invalid OHLC."""
     result = _organize_bars(
-        tmp_path, [_bar("2020-01-02", open_=10, high=8, low=7, close=9)],
+        tmp_path,
+        [_bar("2020-01-02", open_=10, high=8, low=7, close=9)],
         [date(2020, 1, 2)],
     )
 
@@ -227,7 +252,8 @@ def test_market_invalid_high_is_flagged(tmp_path: Path) -> None:
 def test_market_negative_price_is_flagged(tmp_path: Path) -> None:
     """A negative closing price receives the negative-price flag."""
     result = _organize_bars(
-        tmp_path, [_bar("2020-01-02", open_=-1, high=1, low=-2, close=-1)],
+        tmp_path,
+        [_bar("2020-01-02", open_=-1, high=1, low=-2, close=-1)],
         [date(2020, 1, 2)],
     )
 
@@ -237,16 +263,13 @@ def test_market_negative_price_is_flagged(tmp_path: Path) -> None:
 def test_market_zero_close_flag_case_is_not_supported(tmp_path: Path) -> None:
     """The requested zero-close negative-price classification is not implemented."""
     pytest.skip(
-        "close == 0 is classified as invalid_ohlc by the current implementation, "
-        "not negative_price"
+        "close == 0 is classified as invalid_ohlc by the current implementation, not negative_price"
     )
 
 
 def test_market_non_session_quality_flag_is_not_supported(tmp_path: Path) -> None:
     """The requested non-session quality flag is not implemented."""
-    pytest.skip(
-        "organize_market filters out dates outside calendar before assigning quality flags"
-    )
+    pytest.skip("organize_market filters out dates outside calendar before assigning quality flags")
 
 
 def test_market_adjustment_factor_and_one_day_return(tmp_path: Path) -> None:
@@ -256,9 +279,7 @@ def test_market_adjustment_factor_and_one_day_return(tmp_path: Path) -> None:
         _bar("2020-01-03", close=11, adj_close=11),
         _bar("2020-01-06", close=12, adj_close=15),
     ]
-    result = _organize_bars(
-        tmp_path, rows, [date(2020, 1, 2), date(2020, 1, 3), date(2020, 1, 6)]
-    )
+    result = _organize_bars(tmp_path, rows, [date(2020, 1, 2), date(2020, 1, 3), date(2020, 1, 6)])
 
     assert result["adjustment_factor"].tolist() == pytest.approx([0.9, 1.0, 1.25])
     assert pd.isna(result.loc[0, "return_1d"])
@@ -270,7 +291,8 @@ def test_market_adjustment_factor_and_one_day_return(tmp_path: Path) -> None:
 
 
 def _write_financial_inputs(
-    raw_dir: Path, filings: list[dict[str, object]],
+    raw_dir: Path,
+    filings: list[dict[str, object]],
     revenue_values: dict[str, float],
 ) -> None:
     """Write facts, submission rows, and an ownership manifest for a CIK."""
@@ -287,7 +309,8 @@ def _write_financial_inputs(
                             {
                                 "filed": str(filing["filingDate"]),
                                 "end": str(filing["reportDate"]),
-                                "fy": filing["fy"], "fp": filing["fp"],
+                                "fy": filing["fy"],
+                                "fp": filing["fp"],
                                 "val": revenue_values[str(filing["accessionNumber"])],
                             }
                             for filing in filings
@@ -302,9 +325,7 @@ def _write_financial_inputs(
         "filings": {
             "recent": {
                 key: [filing[key] for filing in filings]
-                for key in (
-                    "filingDate", "reportDate", "fy", "fp", "accessionNumber", "form"
-                )
+                for key in ("filingDate", "reportDate", "fy", "fp", "accessionNumber", "form")
             }
         },
     }
@@ -313,10 +334,14 @@ def _write_financial_inputs(
     facts_path.write_text(json.dumps(facts), encoding="utf-8")
     submission_path.write_text(json.dumps(submission), encoding="utf-8")
     (root / "manifest.json").write_text(
-        json.dumps({"resources": [
-            {"logical_key": f"companyfacts:{cik10}", "path": facts_path.name},
-            {"logical_key": f"submissions:{cik10}", "path": submission_path.name},
-        ]}),
+        json.dumps(
+            {
+                "resources": [
+                    {"logical_key": f"companyfacts:{cik10}", "path": facts_path.name},
+                    {"logical_key": f"submissions:{cik10}", "path": submission_path.name},
+                ]
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -324,14 +349,20 @@ def _write_financial_inputs(
 def _filing(filed: str, accession: str, form: str = "10-Q") -> dict[str, object]:
     """Return a filing record with fixed fiscal metadata."""
     return {
-        "filingDate": filed, "reportDate": "2019-12-31", "fy": 2019,
-        "fp": "FY", "accessionNumber": accession, "form": form,
+        "filingDate": filed,
+        "reportDate": "2019-12-31",
+        "fy": 2019,
+        "fp": "FY",
+        "accessionNumber": accession,
+        "form": form,
     }
 
 
 def _organize_filings(
-    tmp_path: Path, filings: list[dict[str, object]],
-    revenue_values: dict[str, float], sessions: list[date],
+    tmp_path: Path,
+    filings: list[dict[str, object]],
+    revenue_values: dict[str, float],
+    sessions: list[date],
 ) -> pd.DataFrame:
     """Organize fixture filings and return their session-aligned output."""
     raw_dir = tmp_path / "raw"
@@ -348,7 +379,9 @@ def _two_filings() -> list[dict[str, object]]:
 def test_financial_as_of_before_second_filing_uses_first(tmp_path: Path) -> None:
     """A February session only sees the filing published the previous January."""
     result = _organize_filings(
-        tmp_path, _two_filings(), {"first": 100.0, "second": 200.0},
+        tmp_path,
+        _two_filings(),
+        {"first": 100.0, "second": 200.0},
         [date(2020, 2, 1)],
     )
 
@@ -359,7 +392,9 @@ def test_financial_as_of_before_second_filing_uses_first(tmp_path: Path) -> None
 def test_financial_as_of_after_second_filing_uses_second(tmp_path: Path) -> None:
     """A May session sees the more recently filed April report."""
     result = _organize_filings(
-        tmp_path, _two_filings(), {"first": 100.0, "second": 200.0},
+        tmp_path,
+        _two_filings(),
+        {"first": 100.0, "second": 200.0},
         [date(2020, 5, 1)],
     )
 
@@ -370,7 +405,9 @@ def test_financial_as_of_after_second_filing_uses_second(tmp_path: Path) -> None
 def test_financial_filing_becomes_visible_on_next_calendar_session(tmp_path: Path) -> None:
     """A filing is hidden on its filed date and visible at the next session."""
     result = _organize_filings(
-        tmp_path, [_filing("2020-01-15", "first")], {"first": 100.0},
+        tmp_path,
+        [_filing("2020-01-15", "first")],
+        {"first": 100.0},
         [date(2020, 1, 15), date(2020, 1, 16)],
     )
 
@@ -384,7 +421,9 @@ def test_financial_amendment_is_a_later_as_of_candidate(tmp_path: Path) -> None:
     original = _filing("2020-01-15", "original", "10-K")
     amendment = _filing("2020-03-15", "amendment", "10-K/A")
     result = _organize_filings(
-        tmp_path, [original, amendment], {"original": 100.0, "amendment": 110.0},
+        tmp_path,
+        [original, amendment],
+        {"original": 100.0, "amendment": 110.0},
         [date(2020, 2, 1), date(2020, 4, 1)],
     )
 
@@ -407,7 +446,11 @@ def _run_cli(*arguments: str | Path) -> subprocess.CompletedProcess[str]:
     )
     return subprocess.run(
         [sys.executable, "-m", "cli.main", *(str(item) for item in arguments)],
-        cwd=REPO_ROOT, env=environment, capture_output=True, text=True, timeout=10,
+        cwd=REPO_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
         check=False,
     )
 

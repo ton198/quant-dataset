@@ -1,0 +1,56 @@
+name: Bug 报告
+description: 报告下载 / 组织 / 样本构建流水线或产物中的可复现问题
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请尽量提供最小可复现信息。
+        安全相关问题请勿在此公开提交，处理方式见 SECURITY.md。
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境
+      description: 操作系统、Python 版本、commit / 版本号、相关依赖版本，以及是否联网
+      placeholder: |
+        OS: Ubuntu 24.04
+        Python: 3.12.3
+        commit: c9ec8fb
+        安装方式: uv sync --frozen / pip install -e '.[dev]'
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 完整命令与最小输入；若可离线复现请说明
+      placeholder: |
+        1. PYTHONPATH=src .venv/bin/python -m cli.main ...
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      description: 报错堆栈、日志、QC 报告摘录等
+    validations:
+      required: true
+  - type: textarea
+    id: artifacts
+    attributes:
+      label: 相关数据产物版本与 manifest 哈希
+      description: 如涉及 data/output 产物，请贴 manifest.json 中对应条目的 sha256 / rows，或说明产物名称与生成 commit
+      placeholder: |
+        产物: samples/year=2024/part-00000.parquet
+        sha256: ...
+        rows: ...
+    validations:
+      required: false

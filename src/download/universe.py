@@ -41,7 +41,8 @@ def load_ticker_cik_overrides(path: Path | None = None) -> dict[str, str]:
 
 
 def apply_ticker_cik_mapping_overrides(
-    ticker_to_cik: dict[str, str], cik_to_ticker: dict[str, str],
+    ticker_to_cik: dict[str, str],
+    cik_to_ticker: dict[str, str],
     path: Path | None = None,
 ) -> None:
     """Apply configured corrections consistently to forward and reverse maps."""
@@ -72,12 +73,16 @@ def _rows(payload: Any) -> list[TickerRow]:
         raise DownloadError("SEC exchange universe has an invalid fields/data structure")
     indexes = {str(name).casefold(): index for index, name in enumerate(fields)}
     try:
-        cik_i, name_i, ticker_i, exchange_i = (indexes[key] for key in ("cik", "name", "ticker", "exchange"))
+        cik_i, name_i, ticker_i, exchange_i = (
+            indexes[key] for key in ("cik", "name", "ticker", "exchange")
+        )
     except KeyError as exc:
         raise DownloadError("SEC exchange universe is missing expected columns") from exc
     result: list[TickerRow] = []
     for row in rows:
-        if not isinstance(row, (list, tuple)) or len(row) <= max(cik_i, name_i, ticker_i, exchange_i):
+        if not isinstance(row, (list, tuple)) or len(row) <= max(
+            cik_i, name_i, ticker_i, exchange_i
+        ):
             continue
         try:
             cik = str(int(row[cik_i])).zfill(10)
@@ -91,7 +96,9 @@ def _rows(payload: Any) -> list[TickerRow]:
     if not overrides:
         return result
     return [
-        TickerRow(item.ticker, overrides.get(item.ticker, item.cik10), item.exchange, item.company_name)
+        TickerRow(
+            item.ticker, overrides.get(item.ticker, item.cik10), item.exchange, item.company_name
+        )
         for item in result
     ]
 
@@ -105,7 +112,11 @@ def fetch_universe(cfg: SourcesConfig, secrets: Secrets) -> list[TickerRow]:
             digest = hashlib.sha256(content).hexdigest()
             if candidate.name == f"{digest}.json":
                 records = _rows(json.loads(content.decode("utf-8")))
-                filtered = [item for item in records if item.exchange.casefold() in {e.casefold() for e in cfg.universe.exchanges}]
+                filtered = [
+                    item
+                    for item in records
+                    if item.exchange.casefold() in {e.casefold() for e in cfg.universe.exchanges}
+                ]
                 if filtered:
                     return filtered
         except (OSError, ValueError, UnicodeDecodeError, DownloadError):
@@ -114,12 +125,18 @@ def fetch_universe(cfg: SourcesConfig, secrets: Secrets) -> list[TickerRow]:
     for attempt in range(max(1, cfg.market.max_retries)):
         response = None
         try:
-            request = urllib.request.Request(cfg.universe.url, headers={"User-Agent": secrets.sec_user_agent,
-                                                                         "Accept": "application/json"})
+            request = urllib.request.Request(
+                cfg.universe.url,
+                headers={"User-Agent": secrets.sec_user_agent, "Accept": "application/json"},
+            )
             response = urllib.request.urlopen(request, timeout=cfg.market.timeout_seconds)
             content = response.read()
             records = _rows(json.loads(content.decode("utf-8")))
-            filtered = [item for item in records if item.exchange.casefold() in {e.casefold() for e in cfg.universe.exchanges}]
+            filtered = [
+                item
+                for item in records
+                if item.exchange.casefold() in {e.casefold() for e in cfg.universe.exchanges}
+            ]
             if not filtered:
                 raise DownloadError("SEC exchange universe contains no configured exchanges")
             directory.mkdir(parents=True, exist_ok=True)
@@ -128,10 +145,17 @@ def fetch_universe(cfg: SourcesConfig, secrets: Secrets) -> list[TickerRow]:
             if not path.exists():
                 path.write_bytes(content)
             return filtered
-        except (urllib.error.URLError, TimeoutError, OSError, ValueError, UnicodeDecodeError, DownloadError) as exc:
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            OSError,
+            ValueError,
+            UnicodeDecodeError,
+            DownloadError,
+        ) as exc:
             last_error = exc
             if attempt + 1 < max(1, cfg.market.max_retries):
-                time.sleep(min(2 ** attempt, 8))
+                time.sleep(min(2**attempt, 8))
         finally:
             if response is not None:
                 response.close()

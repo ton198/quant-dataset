@@ -120,7 +120,10 @@ def load_sources(repo_root: Path) -> SourcesConfig:
         financials = data["financials"]
         macros = data["macros"]
         download = data["download"]
-        if not all(isinstance(section, dict) for section in (universe, market, financials, macros, download)):
+        if not all(
+            isinstance(section, dict)
+            for section in (universe, market, financials, macros, download)
+        ):
             raise TypeError("each source section must be a table")
         return SourcesConfig(
             raw_dir=repo_root / str(download["raw_dir"]),
@@ -131,12 +134,16 @@ def load_sources(repo_root: Path) -> SourcesConfig:
             preserve_progress_on_success=bool(download.get("preserve_progress_on_success", True)),
             universe=UniverseConfig(
                 source=str(universe["source"]),
-                exchanges=tuple(str(item) for item in universe.get("exchanges", ["Nasdaq", "NYSE"])),
+                exchanges=tuple(
+                    str(item) for item in universe.get("exchanges", ["Nasdaq", "NYSE"])
+                ),
                 url=str(universe["url"]),
             ),
             market=MarketConfig(
-                provider=str(market["provider"]), interval=str(market.get("interval", "1d")),
-                auto_adjust=bool(market.get("auto_adjust", False)), actions=bool(market.get("actions", True)),
+                provider=str(market["provider"]),
+                interval=str(market.get("interval", "1d")),
+                auto_adjust=bool(market.get("auto_adjust", False)),
+                actions=bool(market.get("actions", True)),
                 threads=bool(market.get("threads", False)),
                 rate_limit_seconds=float(market.get("rate_limit_seconds", 0.5)),
                 timeout_seconds=float(market.get("timeout_seconds", 30)),
@@ -151,7 +158,8 @@ def load_sources(repo_root: Path) -> SourcesConfig:
                 max_retries=int(financials.get("max_retries", 3)),
             ),
             macros=MacrosConfig(
-                provider=str(macros["provider"]), base_url=str(macros["base_url"]),
+                provider=str(macros["provider"]),
+                base_url=str(macros["base_url"]),
                 file_type=str(macros.get("file_type", "json")),
                 observation_start=str(macros.get("observation_start", "1990-01-01")),
                 rate_limit_seconds=float(macros.get("rate_limit_seconds", 0.1)),
