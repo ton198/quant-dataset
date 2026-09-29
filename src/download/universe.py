@@ -16,6 +16,41 @@ from .config import Secrets, SourcesConfig
 from .errors import DownloadError
 
 logger = logging.getLogger(__name__)
+TICKER_CIK_OVERRIDES_PATH = (
+    Path(__file__).resolve().parents[2] / "config" / "universes" / "ticker_cik_overrides.json"
+)
+
+
+def load_ticker_cik_overrides(path: Path | None = None) -> dict[str, str]:
+    """Load vetted ticker-to-CIK corrections; a missing file means no overrides."""
+    override_path = path or TICKER_CIK_OVERRIDES_PATH
+    try:
+        payload = json.loads(override_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return {}
+    if not isinstance(payload, dict) or not isinstance(payload.get("overrides"), dict):
+        return {}
+
+    overrides: dict[str, str] = {}
+    for ticker, cik in payload["overrides"].items():
+        normalized_ticker = str(ticker).strip().upper()
+        normalized_cik = str(cik).strip()
+        if normalized_ticker and normalized_cik.isdigit() and len(normalized_cik) <= 10:
+            overrides[normalized_ticker] = normalized_cik.zfill(10)
+    return overrides
+
+
+def apply_ticker_cik_mapping_overrides(
+    ticker_to_cik: dict[str, str], cik_to_ticker: dict[str, str],
+    path: Path | None = None,
+) -> None:
+    """Apply configured corrections consistently to forward and reverse maps."""
+    for ticker, cik10 in load_ticker_cik_overrides(path).items():
+        previous_cik = ticker_to_cik.get(ticker)
+        if previous_cik and previous_cik != cik10 and cik_to_ticker.get(previous_cik) == ticker:
+            del cik_to_ticker[previous_cik]
+        ticker_to_cik[ticker] = cik10
+        cik_to_ticker[cik10] = ticker
 
 
 @dataclass(frozen=True)
@@ -52,7 +87,13 @@ def _rows(payload: Any) -> list[TickerRow]:
         exchange = str(row[exchange_i]).strip()
         if ticker and len(cik) == 10:
             result.append(TickerRow(ticker, cik, exchange, str(row[name_i]).strip()))
-    return result
+    overrides = load_ticker_cik_overrides()
+    if not overrides:
+        return result
+    return [
+        TickerRow(item.ticker, overrides.get(item.ticker, item.cik10), item.exchange, item.company_name)
+        for item in result
+    ]
 
 
 def fetch_universe(cfg: SourcesConfig, secrets: Secrets) -> list[TickerRow]:

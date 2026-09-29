@@ -7,6 +7,7 @@ import logging
 from datetime import date
 from pathlib import Path
 
+from build_samples import build_samples
 from download.manager import run_download
 
 
@@ -27,11 +28,22 @@ def _parser() -> argparse.ArgumentParser:
     download.add_argument("--end", type=_date, help="inclusive market end date (YYYY-MM-DD)")
     download.add_argument("--tickers", help="comma-separated ticker subset")
     download.add_argument("--force", action="store_true", help="ignore existing download progress")
+    download.add_argument(
+        "--force-rebuild", action="store_true",
+        help="regenerate all selected ticker organization outputs, even when complete",
+    )
     download.add_argument("--dry-run", action="store_true", help="show planned work without network or writes")
     download.add_argument("--data-dir", type=Path, default=Path("data"),
                           help="base directory for raw, organized, and progress files")
     download.add_argument("--workers", type=int, default=16,
                           help="process workers for per-ticker organization (default: 16)")
+    samples = subparsers.add_parser("build-samples", help="build the training sample long table")
+    samples.add_argument("--data-dir", type=Path, default=Path("data/organized"),
+                         help="organized data directory (default: data/organized)")
+    samples.add_argument("--out", type=Path, default=Path("data/output"),
+                         help="sample bundle output directory (default: data/output)")
+    samples.add_argument("--exclusions-file", type=Path,
+                         help="exclusion JSON (defaults to config/universes/exclusions_v1.json)")
     return parser
 
 
@@ -39,6 +51,13 @@ def main(argv: list[str] | None = None) -> int:
     """Parse CLI arguments and return the download manager's exit code."""
     args = _parser().parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    if args.command == "build-samples":
+        result = build_samples(args.data_dir, args.out, args.exclusions_file)
+        logging.getLogger(__name__).info(
+            "Built %s rows (%s to %s) at %s",
+            result["rows"], result["date_start"], result["date_end"], result["output_dir"],
+        )
+        return 1 if result["failures"] else 0
     if args.command != "download":
         return 2
     stages = args.stage or ["all"]
@@ -55,7 +74,8 @@ def main(argv: list[str] | None = None) -> int:
     tickers = [item.strip().upper() for item in args.tickers.split(",") if item.strip()] if args.tickers else None
     return run_download(repo_root=Path.cwd(), stages=stages, start=args.start, end=args.end,
                         force=args.force, dry_run=args.dry_run, tickers=tickers,
-                        data_dir=args.data_dir, workers=args.workers)
+                        data_dir=args.data_dir, workers=args.workers,
+                        force_rebuild=args.force_rebuild)
 
 
 if __name__ == "__main__":

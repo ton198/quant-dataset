@@ -142,16 +142,17 @@ def _ticker_is_organized(
 
 def _organize_tickers(
     tickers: list[str], by_ticker: dict[str, universe.TickerRow], raw_dir: Path,
-    organized_dir: Path, session_calendar: list[date], workers: int,
+    organized_dir: Path, session_calendar: list[date], workers: int, *, force_rebuild: bool = False,
 ) -> tuple[int, int, int]:
-    """Run per-ticker organization in processes and return success/skip/failure counts."""
+    """Run per-ticker organization, optionally regenerating complete existing outputs."""
     succeeded = skipped = failed = 0
     todo: list[tuple[str, str | None]] = []
     for ticker in dict.fromkeys(tickers):
         record = by_ticker.get(ticker)
         cik10 = record.cik10 if record else None
-        if _ticker_is_organized(ticker, raw_dir, organized_dir,
-                                require_financials=bool(cik10)):
+        if not force_rebuild and _ticker_is_organized(
+            ticker, raw_dir, organized_dir, require_financials=bool(cik10),
+        ):
             skipped += 1
         else:
             todo.append((ticker, cik10))
@@ -196,6 +197,7 @@ def run_download(
     tickers: list[str] | None,
     data_dir: Path | None = None,
     workers: int = 16,
+    force_rebuild: bool = False,
 ) -> int:
     """Run selected stages, returning 1 if any per-item operation fails."""
     try:
@@ -297,7 +299,7 @@ def run_download(
                 session_calendar = _calendar(calendar_start, calendar_end)
                 _, _, organize_failures = _organize_tickers(
                     selected_tickers, by_ticker, cfg.raw_dir, cfg.organized_dir,
-                    session_calendar, workers,
+                    session_calendar, workers, force_rebuild=force_rebuild,
                 )
                 failures += organize_failures
                 try:

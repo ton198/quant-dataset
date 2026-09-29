@@ -1,0 +1,9 @@
+{
+  "schema": "ticker_cik_overrides_v1",
+  "notes": {
+    "XOM": "Use Exxon Mobil Corporation's historical SEC filer; the exchange snapshot incorrectly assigns a 2025 holding company CIK."
+  },
+  "overrides": {
+    "XOM": "0000034088"
+  }
+}
