@@ -1,34 +1,36 @@
-# 安全政策
+# Security Policy
 
-本仓库是离线数据准备流水线，不做在线服务。安全报告主要针对代码缺陷、数据构建缺陷与供应链问题。
+This repository is an offline data-preparation pipeline and runs no online services. Security reports mainly concern code defects, data-build defects, and supply-chain issues.
 
-## 支持版本
+**English** | [简体中文](SECURITY.zh-CN.md)
 
-| 版本  | 支持状态         |
-| ----- | ---------------- |
-| 0.1.x | 接受安全报告与修复 |
+## Supported versions
 
-旧版本不提供安全修复；报告前请先确认问题存在于受支持版本。
+| Version | Supported |
+| --- | --- |
+| 0.1.x | Security reports and fixes accepted |
 
-## 报告方式
+Older versions receive no security fixes; before reporting, confirm that the issue exists in a supported version.
 
-请**私下**报告，不要开公开 issue、讨论或 PR 披露细节：
+## Reporting
 
-1. **首选**：GitHub Security Advisories——在仓库 Security 标签页选择 "Report a vulnerability"（GitHub 私密漏洞报告）。
-2. 备选：通过 GitHub 私信仓库维护者。
+Please report **privately** — do not open a public issue, discussion, or PR that discloses details:
 
-报告请包含：问题描述与影响、复现步骤或最小样例、受影响的版本/提交，以及（可选）修复建议。
+1. **Preferred**: GitHub Security Advisories — on the repository's Security tab, choose "Report a vulnerability" (GitHub private vulnerability reporting).
+2. Alternative: send a private GitHub message to the maintainer.
 
-## 响应承诺
+Include in your report: a description of the issue and its impact, reproduction steps or a minimal example, the affected version/commit, and optionally a suggested fix.
 
-- **7 天内**确认收到报告。
-- 确认后评估影响并给出修复或缓解计划，进展通过同一私密渠道同步。
-- 修复发布后再协商公开披露时间。
+## Response commitment
 
-## 范围
+- Acknowledge receipt **within 7 days**.
+- After confirming, assess the impact and give a fix or mitigation plan; progress is shared through the same private channel.
+- Agree on public disclosure timing only after a fix is released.
 
-- **代码缺陷**：下载、财报抽取、样本构建等逻辑中的安全或正确性问题。
-- **数据构建缺陷**：泄漏与无前视违规（如标签跨 split 泄漏、as-of 规则被绕过）。
-- **供应链**：依赖、构建与发布流程被篡改或投毒的风险。
+## Scope
 
-数据源本身的已知现实（缺行情、非日历财年、FRED 修订值等，见 [docs/developer/known-quirks.md](docs/developer/known-quirks.md)）不属于安全漏洞。
+- **Code defects**: security or correctness problems in download, financial extraction, sample building, and similar logic.
+- **Data-build defects**: leakage and lookahead violations (for example labels crossing splits, or as-of rules being bypassed).
+- **Supply chain**: risks of tampering or poisoning in dependencies, builds, or release processes.
+
+Known data-source realities (missing bars, non-calendar fiscal years, FRED revised values, etc. — see [docs/developer/known-quirks.md](docs/developer/known-quirks.md)) are not security vulnerabilities.

@@ -1,111 +1,133 @@
 # quant-dataset
 
+A frozen quantitative training dataset of US equities (1990–2025), plus the reproducible pipeline that builds it.
+
 [![CI](https://github.com/ton198/quant-dataset/actions/workflows/ci.yml/badge.svg)](https://github.com/ton198/quant-dataset/actions/workflows/ci.yml)
 
-准备并发布**冻结量化数据集**的数据仓库与准备库：负责下载（SEC / Yahoo / FRED）、清洗组织、并构建可复现的训练样本长表。本仓库**不做模型训练**，也不提供回测框架；训练、评估代码属于下游仓库。
+**English** | [简体中文](README.zh-CN.md)
 
-"冻结"的含义：`data/output/` 下的每个产物都在 `manifest.json` 中登记 sha256，schema 版本为 `samples_v1`，下游按固定 schema 消费，重建后应逐字节校验。
+## What this is
 
-## 数据流水线
+`data/output/` holds 23.9M rows of features that only use information available that day, plus the forward returns to predict.
+"Frozen" means the schema (`samples_v1`) is fixed and every file is locked by sha256: a rebuild from the same inputs should match byte for byte.
+This repo prepares data. It does not train models or run backtests — that belongs downstream.
+
+| Fact | Value |
+|---|---|
+| Rows × columns | 23,938,669 × 147 |
+| Stocks | 6,532 |
+| Trading days | 9,067 canonical sessions |
+| Coverage | 1990-01-02 – 2025-12-31 |
+| Storage | 36 yearly Parquet partitions + `meta` / `splits` / `manifest` / `qc` |
+| License | MIT |
+
+A *canonical session* is the shared trading calendar used to align every stock: a day counts when at least 500 common stocks (`is_common`) traded.
+
+## What one row is
+
+One row = one stock (`asset_id`) on one signal day (`date`).
+Features are what was knowable that day: 48 raw (`f_raw_*`: price/volume, financials, macro) + 15 cross-sectional (`f_cs_*`) + 48 missing flags (`miss_*`).
+Labels are the future: 1–30 session returns, plus `excess_5d` / `excess_21d` (market-relative).
 
 ```text
-Yahoo / SEC / FRED
-        │  download
-        ▼
-data/raw/            原始快照（SEC 内容寻址 + manifest.json）
-        │  organize（per-ticker 多进程）
-        ▼
-data/organized/      stocks/<T>/{market.csv,financials.csv} + shared/macro.csv
-        │  build-samples
-        ▼
-data/output/         samples/year=YYYY/part-00000.parquet + meta/splits/manifest/qc
+signal day t             entry at t+1 open          exit at t+1+h open
+    │                          │                            │
+    │  features end at t       │  label window: h sessions
+    └──────────────────────────┴────────────────────────────┘
+      h = 1..30 canonical sessions; the main targets use h = 5 and 21
 ```
 
-每一步都可独立重跑；`download` 支持断点续跑，`build-samples` 每次整体重建。
+## 30-second quickstart
 
-## 当前数据规模
+Read the output with DuckDB (a consumer-side tool, not a repo dependency):
 
-以下数值以 `data/output/manifest.json` 与 `data/output/qc_report.md` 为准（本仓库当前实物）。
+```python
+import duckdb
 
-| 指标 | 值 |
+con = duckdb.connect()
+df = con.execute("""
+    SELECT date, asset_id, excess_5d, excess_21d,
+           f_cs_momentum_120, f_cs_volatility_20
+    FROM read_parquet('data/output/samples/year=*/part-00000.parquet',
+                      hive_partitioning = true)
+    WHERE year BETWEEN 2019 AND 2020
+      AND is_common
+      AND flag_extreme_label = 0
+""").df()
+```
+
+Do not load all 23.9M rows at once — the float32 feature matrix is ~10 GB. Read by year.
+More loaders and pitfalls: [docs/user/recommended-usage.md](docs/user/recommended-usage.md).
+
+## How to use
+
+| Step | Do |
 |---|---|
-| 样本行数 | 23,938,669 |
-| 列数 | 147 |
-| 行粒度 | `(asset_id, date)`，一股票一信号日 |
-| 覆盖区间 | 1990-01-02 – 2025-12-31 |
-| 分区 | `samples/year=YYYY/part-00000.parquet` × 36（snappy） |
-| canonical session | 9,067（当日 is_common 股票数 ≥500 的交易日） |
-| 股票数 | 6,532（`meta.parquet`，已过 purge 与 exclusions） |
-| 特征列 | 48 `f_raw_*` + 15 `f_cs_*` + 48 `miss_*` = 111 |
-| 标签列 | 30 `target_return_1d..30d` + 2 `excess_*` |
-| 落盘大小 | ≈6.3 GiB（`du -sh data/output`） |
+| 1. Split | Use `splits.json`: fit (1990–2018) to train, select (2019–2020) to tune, screen (2021–2024) for out-of-sample, reserve (2025) for one final test. Purge is already applied at build time — do not purge again. |
+| 2. Target | Train on `excess_5d` / `excess_21d`. They subtract the same-day equal-weight common-stock mean. Use `target_return_*` as auxiliary tasks only. |
+| 3. Clean | Drop or down-weight rows with `flag_extreme_label = 1` (120,510 rows, ≈0.5%): their label window crosses a price glitch, so the returns are unreliable. |
 
-## 快速开始
+Two things that bite most often:
+
+- **Survivorship bias**: the universe is today's SEC list and contains no delisted stocks. Trust `screen`, not absolute returns.
+- **Sparse financials**: ~96% missing, and missingness is not random (snapshot semantics — only the latest filing is visible). Model `miss_*`; never fill NaN with 0.
+
+Full workflow: [docs/user/recommended-usage.md](docs/user/recommended-usage.md).
+
+## Rebuild from scratch
+
+Prerequisites: Python ≥3.10 (CI covers 3.10–3.13), access to Yahoo / SEC / FRED, and a `config/secrets.toml` with `sec_user_agent` (SEC requires contact info) and `fred_api_key`.
 
 ```bash
-# 1. 环境与密钥
 uv sync --frozen
-cp config/secrets.example.toml config/secrets.toml
-# 编辑 config/secrets.toml，填 [secrets] 的 fred_api_key 与 sec_user_agent
+cp config/secrets.example.toml config/secrets.toml   # then fill in both keys
 
-# 2. 下载 + 组织（需要联网，可断点续跑；全量耗时以本机与网络为准）
 PYTHONPATH=src .venv/bin/python -m cli.main download \
   --stage all --start 1990-01-01 --end 2025-12-31 --workers 16
-
-# 3. 构建样本包
 PYTHONPATH=src .venv/bin/python -m cli.main build-samples
+
+.venv/bin/python -m pytest
 ```
 
-产物写入 `data/output/`。安装后也可直接用入口命令 `quant-dataset`。参数细节、工作流与排错见 [docs/user/cli.md](docs/user/cli.md)。
+`download` resumes after interruptions. `build-samples` clears and rebuilds `data/output/` every run.
+All flags and exit codes: [docs/user/cli.md](docs/user/cli.md).
 
-常用变体（完整参数见文档）：
+## Repository layout
 
-| 场景 | 命令要点 |
+| Path | What |
 |---|---|
-| 只看计划不落盘 | `download --stage all --start ... --end ... --dry-run` |
-| 单 ticker 补数 | `download --stage market,financials,organize --tickers AAPL --start ... --end ...` |
-| 代码改动后重建 | `download --stage organize --force-rebuild` 后重跑 `build-samples` |
-| 重建前重下 | `download ... --force`（忽略已有进度） |
+| `data/` | `raw/` (immutable snapshots) → `organized/` (per-ticker CSVs) → `output/` (the frozen dataset) |
+| `src/` | CLI entry, download/organize, `build_samples.py` |
+| `config/` | Universe lists, `sources.toml`, local `secrets.toml` (gitignored) |
+| `docs/` | `user/` guides and `developer/` contracts |
+| `tests/` | Offline pytest suite (baseline: 61 passed / 2 skipped) |
 
-## 产物校验
+## Documentation
 
-```bash
-.venv/bin/python -m pytest                     # 单测
-.venv/bin/python - <<'PY'
-import hashlib, json, pathlib
-root = pathlib.Path("data/output")
-manifest = json.loads((root / "manifest.json").read_text())
-bad = [name for name, rec in manifest["outputs"].items()
-       if hashlib.sha256((root / name).read_bytes()).hexdigest() != rec["sha256"]]
-print("sha256 mismatches:", bad)
-PY
-```
-
-## 文档索引
-
-| 文档 | 内容 |
+| User guides | Developer docs |
 |---|---|
-| [docs/user/cli.md](docs/user/cli.md) | 安装、secrets、两个子命令完整参数、典型工作流、耗时与退出码 |
-| [docs/user/data-format.md](docs/user/data-format.md) | 输出文件清单、147 列定义、标签公式、splits/purge、manifest 字段 |
-| [docs/user/recommended-usage.md](docs/user/recommended-usage.md) | 训练侧五步流程、duckdb/pyarrow 加载示例、偏差与常见坑 |
-| [AGENT.md](AGENT.md) | 开发者与 agent 入口：模块结构、内部约定、测试与扩展方式 |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | 贡献指南：开发环境、提交前检查（ruff / pytest）与 PR 流程 |
+| [CLI manual](docs/user/cli.md) — commands, secrets, exit codes | [AGENT.md](AGENT.md) — task routing for agents and contributors |
+| [Data format](docs/user/data-format.md) — all 147 columns, label formulas | [architecture.md](docs/developer/architecture.md) — five-stage data flow |
+| [Recommended usage](docs/user/recommended-usage.md) — training workflow, pitfalls | [data-contracts.md](docs/developer/data-contracts.md) — layer contracts, baselines |
+| | [samples.md](docs/developer/samples.md) — canonical calendar, purge, partitions |
+| | [download.md](docs/developer/download.md) — endpoints, resume, CIK overrides |
+| | [known-quirks.md](docs/developer/known-quirks.md) — "looks like a bug, isn't" |
+| | [testing.md](docs/developer/testing.md) — test layout, offline fixtures |
 
-## 仓库布局
+## Development
 
-| 路径 | 内容 |
-|---|---|
-| `data/raw/` | 数据源原始落盘：`yahoo/`、`sec/`（`financials/` + `universe/`）、`fred/` |
-| `data/organized/` | 逐 ticker 清洗产物 `stocks/<TICKER>/{market.csv,financials.csv}` 与 `shared/macro.csv` |
-| `data/output/` | 冻结样本包（发布产物）：`samples/` + 辅助文件 |
-| `config/` | `sources.toml`（非密配置）、`secrets.toml`（本地密钥，已 gitignore）、`universes/` |
-| `src/cli/` | 命令行入口；`src/download/` 下载与组织；`src/build_samples.py` 样本构建 |
-| `tests/` | pytest 单测 |
-| `docs/` | `user/` 使用文档与 `developer/` 开发文档 |
+Baseline: `pytest` 61 passed / 2 skipped, `ruff check` and `ruff format --check` clean; CI runs the same on Python 3.10–3.13.
+Contributions: [CONTRIBUTING.md](CONTRIBUTING.md). Agents: start at [AGENT.md](AGENT.md).
 
-## 运行前提
+## Known limitations
 
-- Python ≥3.10；依赖见 `pyproject.toml`（pyarrow / pandas / numpy / exchange-calendars / yfinance；torch 为可选 `train` extra，当前代码未使用）。
-- 联网访问 Yahoo、SEC、FRED；SEC 要求 User-Agent，FRED 要求 API key。
-- 单测：`.venv/bin/python -m pytest`。
-- 重建产物前先读 [docs/user/recommended-usage.md](docs/user/recommended-usage.md) 的"常见坑"；`build-samples` 会清空并重建 `data/output/`。
+- **Survivorship**: the universe is today's SEC ticker list; delisted stocks are absent, so history reads better than it was.
+- **FRED is not vintage**: macro features use latest revised values, so they contain hindsight.
+- **Adjusted open is not a fill price**: labels come from `open × adj_close / close`, not executable trades.
+- **Financial coverage is sparse and non-random**: ~96% missing, skewed toward filing-dense periods and large caps.
+
+More: [docs/developer/known-quirks.md](docs/developer/known-quirks.md).
+
+## License
+
+MIT — see [LICENSE](LICENSE).
