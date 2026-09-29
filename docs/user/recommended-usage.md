@@ -1,43 +1,45 @@
-# 推荐用法（训练侧）
+**English** | [简体中文](recommended-usage.zh-CN.md)
 
-面向消费 `data/output/` 的下游训练代码。列定义与文件细节见 [data-format.md](data-format.md)；CLI 与重建流程见 [cli.md](cli.md)。
+# Recommended Usage (Training Side)
 
-## 1. 五步流程
+For downstream training code that consumes `data/output/`. Column definitions and file details are in [data-format.md](data-format.md); the CLI and rebuild workflow are in [cli.md](cli.md).
 
-### 第 1 步：用 `splits.json` 切分，不再做 purge
+## 1. Five-step workflow
 
-- 取 `fit` 训练、`select` 调参/选型、`screen` 样本外验证；`reserve` 只在最终一次性评估时动。
-- 三个边界的 31 个信号日已在构建期整体剔除（`purged_windows`），标签不会跨段；下游重复 purge 会再丢约 44 万行。
-- fit 段内如需时序交叉验证，按整段日期切（例如按年滚动），不要随机打散。
+### Step 1: split with `splits.json` — do not purge again
 
-### 第 2 步：主目标用 `excess_5d` / `excess_21d`
+- Use `fit` for training, `select` for tuning/model selection, and `screen` for out-of-sample validation; touch `reserve` only once, for the final evaluation.
+- The 31 signal sessions before each of the three boundaries are already removed at build time (`purged_windows`), so labels never cross split boundaries; purging again downstream throws away roughly 440K more rows.
+- If you need time-series cross-validation inside `fit`, split by contiguous date ranges (e.g. rolling by year) — never shuffle at random.
 
-- 两者已减去同日 is_common 等权基准，直接建模可避免把市场 beta 当 alpha；仓库内没有 SPY，这是唯一基准口径。
-- 其余 `target_return_1d..30d` 作辅助任务（多 horizon 共享表示、辅助正则），不要与 excess 目标在同一头混用。
-- 标签在数据集尾端自然缺失（未来价格不足），属预期，不要填补。
+### Step 2: use `excess_5d` / `excess_21d` as the primary targets
 
-### 第 3 步：特征用 111 列（48 f_raw + 15 f_cs + 48 miss）
+- Both already subtract the same-date equal-weight benchmark of `is_common` stocks, so modeling them directly avoids mistaking market beta for alpha; the repo has no SPY, and this is the only benchmark definition available.
+- The remaining `target_return_1d..30d` serve as auxiliary tasks (shared representation across horizons, auxiliary regularization); do not mix them with the excess targets in the same head.
+- Labels are naturally missing at the tail of the dataset (not enough future prices) — expected; do not impute them.
 
-- 股票维度特征优先用 `f_cs_*`：当日截面 rank→逆正态，天然跨日可比，避免量纲漂移。
-- 宏观列只有 `f_raw_*`（同日恒定，不做截面）；`_d1`/`_d5` 是 canonical 轴位置差。
-- `miss_*` 显式建模（0/1 特征或掩码），不要把 NaN 当 0 填。
-- `is_common` 可作过滤条件；若保留非普通股，至少把它作为特征并检查该类行的标签分布。
+### Step 3: use the 111 feature columns (48 f_raw + 15 f_cs + 48 miss)
 
-### 第 4 步：处理 `flag_extreme_label`
+- For stock-level features, prefer `f_cs_*`: same-date cross-sectional rank → inverse normal, comparable across days by construction, which avoids scale drift.
+- Macro columns exist only as `f_raw_*` (constant within a day, so they have no cross-section); `_d1`/`_d5` are positional differences on the canonical axis.
+- Model `miss_*` explicitly (0/1 feature or mask); never fill NaN with 0.
+- `is_common` works as a filter; if you keep non-common rows, at least use it as a feature and check the label distribution of those rows.
 
-- `=1` 共 120,510 行（≈0.5%），标签窗口穿过价格毛刺（相邻 adjusted open 比值超出 [0.5, 2.0]），标签不可信。
-- 训练时剔除（或大幅降权）；评估时同样剔除，否则个别毛刺会主导指标。
-- 注意 excess 基准已排除这些行，若自己重算基准需保持同一口径。
+### Step 4: handle `flag_extreme_label`
 
-### 第 5 步：按 year 分块加载
+- `=1` for 120,510 rows (≈0.5%): the label window crosses a price glitch (consecutive adjusted-open ratios outside [0.5, 2.0]) and the label is unreliable.
+- Drop them (or down-weight heavily) during training; drop them in evaluation as well, otherwise a few glitches dominate the metrics.
+- Note that the excess benchmark already excludes these rows; if you recompute the benchmark yourself, keep the same convention.
 
-- 全量 float32 特征矩阵在内存中约 10 GB（23.9M × 95 float32 ≈ 9.1 GB + 键列），不适合一次性读全量。
-- 推荐按年（或年区间）流式读取：每个分区约 45–440 MB（snappy），单年一次读入即可。
-- 训练循环按年 shuffle 文件顺序即可；跨年随机采样对内存不友好。
+### Step 5: load by year
 
-## 2. 加载示例
+- The full float32 feature matrix takes about 10 GB in memory (23.9M × 95 float32 ≈ 9.1 GB plus key columns), so reading everything at once is impractical.
+- Stream by year (or year range) instead: each partition is ~45–440 MB (snappy) and a single year fits in memory.
+- Shuffling the file order per year in the training loop is enough; random sampling across years is hard on memory.
 
-duckdb 直查 parquet glob（适合交互式探索；`year` 为 Hive 分区列）：
+## 2. Loading examples
+
+Direct duckdb query over the parquet glob (good for interactive exploration; `year` is a Hive partition column):
 
 ```python
 import duckdb
@@ -55,7 +57,7 @@ df = con.execute("""
 """).df()
 ```
 
-pyarrow.dataset 惰性读 + 分区下推（`date` 为 `date32`，过滤值要用 `datetime.date`，字符串会报无 kernel）：
+Lazy pyarrow.dataset read with partition pushdown (`date` is `date32`, so filter values must be `datetime.date` — strings raise a no-kernel error):
 
 ```python
 from datetime import date
@@ -76,25 +78,25 @@ table = dataset.to_table(
 df = table.to_pandas()
 ```
 
-## 3. 偏差与数据源现实
+## 3. Biases and data-source realities
 
-| 现象 | 原因 | 应对 |
+| Symptom | Cause | What to do |
 |---|---|---|
-| 幸存者偏差 | universe 是当前 SEC 名单，无退市股 | fit 期收益偏乐观；以 screen 作为真实检验，不要外推绝对收益 |
-| FRED 非 vintage | 存的是最新修正值 | 宏观特征含事后修正；对宏观依赖做敏感性检查 |
-| adjusted open 非可成交价 | `open × adj_close / close` 的复权价 | 不可当成交价；成本/滑点自行建模 |
-| `is_common` 是启发式 | 仅按 ticker 后缀判断 | 需要严格股票池时自建 security master；非普通股行仍在表中 |
-| 财务覆盖稀疏（缺失 ≈96%）且非随机 | 快照语义：仅当日最新申报可见，字段缺失不继承旧值；申报密集期/大公司覆盖更好 | 用 `miss_*` + `f_raw_days_since_filing`；按覆盖度分层评估 |
-| 宏观前期稀疏 | 部分序列 2000 年代前缺失（如 `BAMLH0A0HYM2` 缺失 87%） | 用 `miss_m_*` 掩码；宏观敏感模型缩短训练窗口 |
-| 无 SPY 基准 | 组织数据中不存在指数 | excess 为等权 is_common 均值基准，比较对象要一致 |
-| 标签窗口重叠 | 相邻信号日共享未来价格（自相关） | 评估按股票/日期聚类或整段留出；不要用随机 K 折 |
-| canonical 日历 ≠ 交易所日历 | 仅保留 ≥500 只 is_common 股票的 session | 对齐外部数据时以样本表内 `date` 轴为准 |
+| Survivorship bias | The universe is the current SEC list; there are no delisted stocks | Fit-period returns skew optimistic; treat `screen` as the real test and do not extrapolate absolute returns |
+| FRED is not vintage | Only latest revised values are stored | Macro features contain hindsight revisions; run sensitivity checks on macro exposure |
+| Adjusted open is not executable | `open × adj_close / close` is an adjusted price | Do not treat it as a fill price; model costs/slippage yourself |
+| `is_common` is a heuristic | Decided by ticker suffix only | Build your own security master if you need a strict equity universe; non-common rows remain in the table |
+| Financial coverage is sparse (≈96% missing) and non-random | Snapshot semantics: only the latest filing on that date is visible, and a missing field does not inherit older values; coverage is better around filing-dense periods and for large companies | Use `miss_*` + `f_raw_days_since_filing`; evaluate in coverage-stratified buckets |
+| Early macro gaps | Some series are missing before the 2000s (e.g. `BAMLH0A0HYM2` is 87% missing) | Mask with `miss_m_*`; shorten the training window for macro-sensitive models |
+| No SPY benchmark | The organized data contains no index | Excess is an equal-weight `is_common` mean benchmark; compare like with like |
+| Overlapping label windows | Adjacent signal dates share future prices (autocorrelation) | Cluster evaluation by stock/date or hold out whole periods; do not use random K-fold |
+| Canonical calendar ≠ exchange calendar | Only sessions with ≥500 `is_common` stocks are kept | When aligning external data, use the `date` axis of the sample table |
 
-## 4. 常见坑
+## 4. Common pitfalls
 
-1. **重复 purge**：purge 已在构建期完成，下游再砍 31 个 session 只会白丢数据（见 `splits.json.purge_semantics`）。
-2. **忽略 `miss_*`**：`f_raw_*` 为 null 不等于 0；直接把 NaN 填 0 会制造伪信号，尤其财务列缺失率极高。
-3. **截面特征跨日混用**：`f_cs_*` 只在生成它的当日截面内有意义；不要跨日做池化标准化或把不同日期的 rank 混进同一 batch 统计。
-4. **标签重叠自相关**：相邻日样本高度相关，随机切分/早停会高估表现；坚持按时间与股票分组评估。
-5. **把 `is_common=false` 当普通股**：这些行（权证、优先股等）仍参与截面 rank；只按 `asset_id` 取数会悄悄混入非目标证券。
-6. **手改 `data/output/` 产物**：`build-samples` 每次都会清空重建并刷新 sha256；修改应落在代码或 `config/universes/exclusions_v1.json`，再整体重建。
+1. **Purging twice**: purge already happened at build time; cutting another 31 sessions downstream only wastes data (see `splits.json.purge_semantics`).
+2. **Ignoring `miss_*`**: a null `f_raw_*` is not 0; filling NaN with 0 manufactures spurious signal, especially in the financial columns with very high missingness.
+3. **Mixing cross-sectional features across days**: `f_cs_*` is meaningful only within the cross-section that generated it; do not pool-normalize across days, and do not mix ranks from different dates into the same batch statistics.
+4. **Overlapping-label autocorrelation**: adjacent-day samples are highly correlated; random splits or early stopping overstate performance. Always evaluate with time- and stock-grouped splits.
+5. **Treating `is_common=false` as common stock**: those rows (warrants, preferreds, etc.) still take part in cross-sectional ranks; selecting by `asset_id` alone silently mixes in unintended securities.
+6. **Hand-editing `data/output/` artifacts**: `build-samples` clears and rebuilds everything on every run and refreshes sha256; make changes in code or `config/universes/exclusions_v1.json`, then rebuild.
