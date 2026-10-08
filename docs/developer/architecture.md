@@ -2,104 +2,92 @@
 
 # Architecture
 
-Scope: an **offline pipeline from external data sources to frozen training samples** — `data/raw/` (append-only raw snapshots) → `data/organized/` (per-ticker daily panels) → `data/output/` (sample bundle + audit files). Behavior is defined by the code in `src/` and the configuration in `config/`; `data/`, `logs/`, and `archive/` are not version-controlled.
+The repository keeps existing market/SEC/FRED ingestion separate from one finance-free `samples` builder and offers optional `query-samples` reads of current-contract bundles. The migration to the five-module `samples` package and shared read-only SQL guard is implemented in the current source tree; it did not change download or organize behavior. The 2026-10-03 publication at `data/output/` retains the historical manifest value `schema_version="samples_v3"`; the former 147-column artifact and frozen baseline remain separately preserved. These bundles stay unchanged and read-only; this document does not announce a new publication. Querying adds no new storage format.
 
-Before changing code, read the task-routing table in [AGENT.md](../../AGENT.md). Field-level contracts for each layer are in [data-contracts.md](data-contracts.md); download details in [download.md](download.md); sample details in [samples.md](samples.md).
+Before changing code, read [AGENT.md](../../AGENT.md). Single sample contract and package migration: [samples-architecture.md](samples-architecture.md), [samples.md](samples.md), and [data-contracts.md](data-contracts.md). Existing source behavior: [download.md](download.md). The separate bounded filing archive has independent real pilot roots; neither is a `samples` input or broad-coverage claim. See [financial-filing-archive.md](financial-filing-archive.md) and the [user guide](../user/filings.md) for current results and limits.
 
 ## 1. Data-flow overview
 
 ```text
-external sources                        data/raw/ (payload filename = sha256, append-only)   data/organized/                data/output/
-──────────────                          ────────────────────────────────────────────────     ────────────────               ────────────
-SEC company_tickers_exchange ─┐
-config/universes/*.json ──────┴──→  sec/universe/<sha256>.json ──────┐
-Yahoo Finance ───────────────────→  yahoo/<TICKER>/<start>_<end>.csv  ├─→ stocks/<T>/market.csv     ─┐
-SEC companyfacts / submissions ──→  sec/financials/<sha256>.json      │   stocks/<T>/financials.csv ─┼─→ build-samples ─→ samples/year=YYYY/
-(incl. historical filing pages)      + manifest.json (key → versions) │   shared/macro.csv          ─┘      + meta / manifest / splits
-FRED observations ───────────────→  fred/<SERIES>/<sha256>.json       │                                          / qc_report
-                                    + manifest.json                   ┘
+existing sources                  data/raw/                         data/organized/                 samples candidate
+───────────────                   ─────────                         ────────────────                 ───────────────────
+Yahoo market ────────────────→ yahoo/<T>/<range>.csv ───────────→ stocks/<T>/market.csv ─────┐
+FRED observations ───────────→ fred/<series>/<sha>.json ────────→ shared/macro.csv ──────────┼→ build-samples
+                                                                                              │   fresh --out only
+SEC CompanyFacts/submissions → sec/financials/<sha>.json ──┐                                   │
+                         + manifest.json                     └→ financials.csv / selected       ┘
+                                                              financial_events_v1 artifacts
+                                                              (separate; not read by builder)
 ```
 
-The lifecycle has five stages:
+```text
+existing sample bundle (Parquet files + manifest)
+        ├── direct Python reads with PyArrow
+        └── optional query-samples → in-memory DuckDB → CSV output
+```
 
-1. **universe**: fetch a SEC `company_tickers_exchange` snapshot → filter by `config/sources.toml [universe].exchanges` (currently Nasdaq + NYSE) → merge manual corrections from `config/universes/ticker_cik_overrides.json` (currently only `XOM → 0000034088`).
-2. **download** (CLI stages: `market` / `financials` / `macros`): Yahoo daily bars; SEC Company Facts + Submissions + historical filing pages; 11 FRED macro series. Raw payloads are append-only and never rewritten.
-3. **organize** (CLI stage: `organize`): market-data cleaning + derived columns; financials aligned as-of to sessions; macro wide table; multi-process per ticker (`--workers`, default 16).
-4. **build-samples** (standalone command): bootstrap the canonical calendar from the full market panel → stream features/labels per ticker → per-day cross-sectional ranks → write yearly parquet partitions + audit files.
-5. **consumption**: the training side verifies hashes against `data/output/manifest.json` and picks windows from `splits.json`; it **does not purge again**.
+The SEC raw cache still contains Company Facts, submissions and historical submissions-page JSON; it is distinct from the explicit-root filing archive. `filings catalog` copies verified cached submissions into that archive; bounded `filings download` stores selected inventory/documents; `filings parse` publishes parser attempts and extracted facts/sections. The first-five private pilot is at v7 (6,017 facts/165 sections); a separate ten-filing, eight-CIK private batch is at v15 (25,656 facts/95 sections; 15 full text, 6 full XBRL, 4 unsupported XBRL). The RBC group is one primary-anchored 7,543-occurrence parse (40 primary/7,503 EX2), but raw scope remains partial. These archives are separate and neither feeds `samples`. `financial_events_v1` remains the selected nine-concept artifact. Query commands use in-memory DuckDB, not a persistent database or sample-data migration.
+
+Existing lifecycle stages:
+
+1. **universe:** fetch SEC `company_tickers_exchange`, apply the configured exchange filter and ticker→CIK overrides.
+2. **download:** existing Yahoo bars, SEC Company Facts/submissions/history pages, and configured FRED series; this behavior remains unchanged.
+3. **organize:** write cleaned market and macro panels and the separate existing financial outputs. Financial organize artifacts remain available independently.
+4. **build-samples:** derive the canonical calendar from market panels, construct non-financial features/labels, cross-sectional ranks, and QC, then write a fresh candidate output directory. It does not read financial files or financial `_meta.json` records and performs no financial preflight, coverage, or inventory; the current manifest contains no financial-status claim.
+5. **consumption:** validate a candidate's `manifest.json` and output hashes; use `splits.json`. Purge is already applied and consumers do not purge again.
+6. **optional sample query:** `query-samples` accepts only the strict current `samples` contract, validates its schema/feature registry/fingerprints and all manifest-registered output hashes, byte counts and row counts, then reads sample Parquet files. This integrity validation is not independent semantic or release verification.
+7. **separate filing archive:** `filings catalog` reads the local cache; bounded `filings download` fills selected inventory/documents; `filings parse` processes already-present selected bytes and publishes parse/fact/text/dependency tables; `verify` and `query` inspect the explicit archive. This workflow does not feed `samples`. Two finite real pilots are persisted in separate roots (first-five v7 and second-ten v15); see [financial-filing-archive.md](financial-filing-archive.md) for per-case statuses and limits.
+
+The archived `data/output/` bundle has 96 features and 132 physical columns under its original `samples_v3` manifest label. The former 147-column output remains at `data/output-v1-backup-20261003T172214933236Z`; the frozen baseline remains separate. These are read-only historical artifact facts, not the new product contract.
 
 ## 2. Module responsibilities
 
-| Module | Responsibility | Key entry points |
-|---|---|---|
-| `src/cli/main.py` | The only command-line entry point; argument parsing, stage expansion, exit codes | `_parser()`, `main()` |
-| `src/download/manager.py` | Orchestrates a download run: ticker selection, progress lock, per-stage execution, organize process pool | `run_download()`, `_organize_tickers()` |
-| `src/download/universe.py` | SEC ticker-list snapshot (content-addressed cache) + ticker→CIK override merge | `fetch_universe()`, `load_ticker_cik_overrides()` |
-| `src/download/market.py` | Yahoo daily-bar download (yfinance, auto_adjust=false) | `fetch_market()` |
-| `src/download/financials.py` | SEC companyfacts / submissions / historical page download; content-addressed + manifest appends | `fetch_financials()` |
-| `src/download/macros.py` | FRED observations download; content-addressed + manifest appends | `fetch_macros()` |
-| `src/download/organize.py` | Market cleaning/derived columns/`quality_flag`; macro wide table and visibility rules; writes `_meta.json` | `organize_market()`, `organize_macros()` |
-| `src/download/organize_financials.py` | Filing fact extraction (concept whitelist), fiscal identifier fallback, per-session as-of expansion | `organize_financials()` |
-| `src/download/progress.py` | Resumable worklist (atomic writes) + PID file lock (stale locks reclaimed automatically) | `initialize()`, `save_atomic()`, `acquire_lock()` |
-| `src/download/config.py` | Reads `config/sources.toml` / `config/secrets.toml` into frozen dataclasses | `load_sources()`, `load_secrets()` |
-| `src/download/errors.py` | Three domain exception types | `ConfigError` / `DownloadError` / `OrganizeError` |
-| `src/build_samples.py` | Sample long table: canonical calendar, features/labels, purge, cross-sectional ranks, partitioned writes and audit | `build_samples()` |
-| `config/` | Endpoint and stage configuration, secrets (gitignored), universe overrides/exclusions | `sources.toml`, `secrets.toml`, `universes/*.json` |
-| `tests/` | All offline tests (6 files) | see [testing.md](testing.md) |
+| Module | Responsibility |
+|---|---|
+| `src/cli/main.py` | `download`, `build-samples`, and optional `query-samples` CLI parsing and dispatch |
+| `src/samples/query.py` | Implemented optional read-only SQL queries over strict current-contract sample bundles; no persistent database |
+| `src/query_support/readonly_sql.py` | Implemented neutral shared SQL guard for `samples` and filings query consumers |
+| `src/filings/{cli,workflow,archive,acquisition,processing,query}.py` | Separate catalog/archive, bounded SEC acquisition, offline-first parse integration, archive verification, and descriptor-backed local query commands |
+| `src/filings/config.py` | SEC-only contact setting for acquisition and explicit taxonomy preparation; no FRED key required |
+| `src/filings/{parse_xbrl,parse_text,dependencies,parsing_models}.py` | Source-preserving local parsers, bounded taxonomy dependency preparation, and parser-owned Arrow occurrence schemas |
+| `src/download/manager.py` | Existing download-stage orchestration, progress, lock, and parallel organize |
+| `src/download/universe.py` | SEC ticker snapshot and ticker→CIK overrides |
+| `src/download/market.py` | Yahoo daily-bar download |
+| `src/download/financials.py` | Existing Company Facts/submissions/history-page JSON cache; not full filing HTML |
+| `src/download/macros.py` | Existing FRED observations download |
+| `src/download/organize.py` | Market cleaning/derived values, macro alignment, and organize metadata |
+| `src/download/organize_financials.py` | Existing selected-concept financial extraction and legacy daily snapshot |
+| `src/download/financial_events.py` | Existing selected `financial_events_v1` event/fact Parquet artifact; separate from sample building |
+| `src/samples/{__init__,builder,query,contracts,validation}.py` | Current five-file package implementing the single finance-free `samples` product. The retired top-level modules and historical tools are absent; see [source-layout-audit.md](source-layout-audit.md) for the dated pre-migration snapshot and current tree. |
+| `config/` | Sources, secrets template, universe overrides and exclusions |
+| `tests/` | Offline tests and fixtures |
 
 ## 3. Data locations and lifecycle
 
-| Location | Producer | Content | Update semantics | Consumer |
-|---|---|---|---|---|
-| `data/raw/yahoo/<T>/<start>_<end>.csv` | `market.fetch_market` | Raw yfinance CSV (Adj Close/Close/Dividends/High/Low/Open/Stock Splits/Volume) | Re-downloading the same name overwrites it (**not** content-addressed) | `organize.organize_market` |
-| `data/raw/sec/universe/<sha256>.json` | `universe.fetch_universe` | Full SEC ticker-list snapshot (`fields`/`data`) | New content → new file; filename = content sha256, verified on read | `manager._cached_universe`, `organize_financials._ticker_mappings` |
-| `data/raw/sec/financials/<sha256>.json` | `financials.fetch_financials` | companyfacts / submissions / historical page payloads | Append-only, never rewritten | `organize_financials` |
-| `data/raw/sec/financials/manifest.json` | same as above | `logical_key` → version list (path/sha256/url/...) | tmp + rename atomic replacement; versions only appended | same as above |
-| `data/raw/fred/<SERIES>/<sha256>.json` + `fred/manifest.json` | `macros.fetch_macros` | FRED observations | Same as above (append-only manifest) | `organize.organize_macros` |
-| `data/organized/stocks/<T>/market.csv` | `organize.organize_market` | Cleaned market panel | Overwritten on rerun; `_meta.json` records input/output hashes | `build_samples` |
-| `data/organized/stocks/<T>/financials.csv` | `organize_financials` | Session-level as-of financial snapshots | Overwritten on rerun | `build_samples` |
-| `data/organized/stocks/<T>/_meta.json` | both organize functions | Completion marker + input/output sha256 + row_counts | Merged/updated on rerun | `manager._ticker_is_organized` |
-| `data/organized/shared/macro.csv` | `organize.organize_macros` | Session-aligned macro wide table | Overwritten on rerun | `build_samples` |
-| `data/output/{samples,meta.parquet,manifest.json,splits.json,qc_report.*}` | `build_samples` | Sample bundle | Fully rebuilt every run (old outputs cleared first) | Training side |
-| `data/.download_progress{,.tmp,.lock}` | `progress` | Resumable worklist, temp file, PID lock | Atomic replacement; `--force` discards and rebuilds | `manager` only |
-| `logs/`, `archive/` | Driver scripts / humans | Run logs, cold archives | Gitignored, managed manually | none |
+| Location | Producer | Contents / update behavior | `samples` input? |
+|---|---|---|---|
+| `data/raw/yahoo/<T>/<start>_<end>.csv` | Existing market downloader | Yahoo CSV; same interval filename may be replaced | Indirectly, after market organize |
+| `data/raw/sec/universe/<sha256>.json` | Existing universe downloader | Content-addressed universe snapshot | No |
+| `data/raw/sec/financials/<sha256>.json` + `manifest.json` | Existing SEC financial downloader | Company Facts, submissions, historical page payloads; content-addressed payloads, append-version manifest | No |
+| Explicit filing archive run root (for example `data/filings/pilot`) | `filings catalog/download/parse` | Separate immutable source CAS and manifest-listed snapshots; `facts`/`sections`, auxiliary `parses`/`dependencies` tables exist only after processing publishes them | No |
+| `data/raw/fred/<SERIES>/<sha256>.json` + manifest | Existing macro downloader | FRED observations and versions | Indirectly, after macro organize |
+| `data/organized/stocks/<T>/market.csv` | `organize_market` | Cleaned market panel | **Yes** |
+| `data/organized/shared/macro.csv` | `organize_macros` | Session-aligned macro panel | **Yes** |
+| `data/organized/stocks/<T>/financials.csv` | `organize_financials` | Existing daily whole-filing snapshot, unchanged | **No** |
+| `data/organized/stocks/<T>/financial_events.parquet` and `financial_facts.parquet` | Existing financial organizer | Selected nine-concept `financial_events_v1`; not a complete archive | **No** |
+| `data/organized/stocks/<T>/_meta.json` | Existing organize functions | Raw/organized input-output provenance, including legacy financial artifact records | Builder does not read financial records |
+| Fresh candidate output path (CLI default: `data/samples-output`) | `build-samples` | Single `samples` contract, meta, split/manifest/QC files; safe destination checks apply | Output |
+| Existing `data/output/` | Archived daily bundle | Its 2026-10-03 manifest retains `schema_version="samples_v3"` | Read-only historical artifact; do not target as a candidate |
+| V1 backup and frozen baseline | Preserved historical references | `data/output-v1-backup-20261003T172214933236Z` and `data/baselines/samples_v1_financial_upgrade/` | Keep separate; do not overwrite |
 
-Configuration and run-state details:
+## 4. Existing ingestion versus modular filing archive
 
-| Path | Content |
-|---|---|
-| `config/sources.toml` | `[universe]` endpoint and exchange whitelist; `[market]`/`[financials]`/`[macros]` throttling, timeouts, retries; `[macros].series` series list; `[download]` paths |
-| `config/secrets.toml` | `[secrets] sec_user_agent`, `fred_api_key`; gitignored (template `secrets.example.toml`) |
-| `config/universes/ticker_cik_overrides.json` | Manual ticker→CIK corrections (currently XOM → 0000034088) |
-| `config/universes/exclusions_v1.json` | Sample-build exclusion list (currently AYA, FUND) |
-| `data/.download_progress` | JSON worklist: `run_id`, `started_at_utc`, `universe_source`, `stages{stage:{item: done / pending / failed:...}}`; paired `.tmp` (write buffer) and `.lock` (PID lock) |
-| `archive/` | Local cold storage (e.g. `2026-09-24_pre_download_v2/`, a full-repo backup from before the migration); not in git, managed manually |
+The current `download --stage financials` remains the Company Facts/submissions/history-page workflow and does not fetch full filing documents. The separate `filings catalog/download/parse/verify/query` commands operate on explicit archive roots. Catalog is local-cache-only; download is bounded; parse works only from already-present selected files, is offline by default, and prepares taxonomy only when explicitly requested; query reads only existing manifest-listed tables. The pilot archives are not `samples` inputs. Filing pilot outcomes, archived-source grouping, raw-coverage limits, and their separately recorded verification evidence are in [financial-filing-archive.md](financial-filing-archive.md); they are not a samples gate.
 
-## 4. Scheduling and concurrency
+## 5. Determinism and safe output
 
-- A single `download` run holds `data/.download_progress.lock` (PID file lock) for its entire duration; **two runs must not share one data-dir**. The organize process pool only reads `raw/` and writes its own ticker directories.
-- `--force`: ignore the old progress state and rebuild the worklist for the selected stages (this re-downloads). `--force-rebuild`: force only organize outputs to be refreshed, without affecting download progress.
-- organize is idempotent per ticker: it skips when `_meta.json` records the outputs and their file sha256 verify; `--force-rebuild` or corrupt metadata forces a redo.
-- With `--stage organize` and no `--start/--end`, the organize calendar runs from `1990-01-01` through today (`manager.run_download`). An organize-only rerun extends `financials.csv` to today; build-samples only takes canonical sessions inside the sample window, so it is unaffected.
-- build-samples is streaming end to end, so memory does not grow with full-market row count: 50 tickers per staging batch → cross-sectional ranks per 40-session chunk → appended to per-year `ParquetWriter` files.
-
-## 5. Determinism mechanisms
-
-| Mechanism | Location |
-|---|---|
-| Stable sorting (`kind="mergesort"`; market.csv sorted by date, duplicate dates keep last) | `build_samples`, `organize_market` |
-| JSON always `sort_keys=True` + atomic replacement via temp files | all manifests / splits / progress / `_meta.json` |
-| Raw payload content addressing (filename = sha256) | `universe` / `financials` / `macros` |
-| sha256 registration of all outputs (`manifest.json` itself excluded) | `build_samples._hash_output_files` |
-| Canonical axis driven by data rather than a hard-coded calendar | `build_samples` (XNYS sessions with ≥500 common tickers) |
-
-## 6. Test layout
-
-| File | Coverage |
-|---|---|
-| `tests/test_download.py` | secrets/sources loading, atomic progress writes, market cleaning, financial as-of, CLI help |
-| `tests/test_organize_parallel.py` | process pool matches serial results, skip/redo, shared CIK, failure isolation |
-| `tests/test_organize_financials.py` | concept priority, fiscal identifier fallback, parsing of three submissions payload shapes |
-| `tests/test_build_samples.py` | labels/features/as-of/purge/output dtypes and exclusions |
-| `tests/test_progress_lock.py` | stale lock reclamation, live lock rejection |
-| `tests/test_ticker_overrides.py` | XOM CIK override forward/reverse lookup, `--force-rebuild` |
+- Existing raw SEC/FRED payloads are content-addressed; their manifests map logical resources to payload versions.
+- Sample row ordering, canonical session alignment, registry order, and manifest hashing remain part of the `samples` contract.
+- `workspace_root` defaults to CWD and can be set with `--workspace-root`; the default exclusions path is `<workspace_root>/config/universes/exclusions_v1.json`. Explicit exclusions paths resolve relative to CWD, and a missing exclusions file is an error. Do not infer workspace/config/data paths from the installed source package.
+- Protect `<workspace_root>/data/` and related raw/output/baselines locations; for a normal `<data>/organized` input, recognized raw/output/baseline/archive siblings beside its data directory are protected independently of `workspace_root`. The explicit workspace root must exist. Reject symlink paths/ancestors, non-empty targets, and destinations overlapping protected paths or actual inputs. The CLI default output is `data/samples-output`; use a fresh unused `--out` path and do not target preserved bundles or baselines.
+- The archived publication report is historical evidence only; it is not current test or performance evidence. New sample builds require independent current-contract verification and must not depend on a cross-generation projection oracle.

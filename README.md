@@ -1,132 +1,97 @@
 # quant-dataset
 
-A frozen quantitative training dataset of US equities (1990–2025), plus the reproducible pipeline that builds it.
+An offline pipeline for US-equity market/macro data and finance-free sample bundles. The maintained sample contract is a single unversioned `samples` product; existing output artifacts are preserved separately and are not rewritten by documentation or code migration. This repository does not train models or run backtests.
 
 [![CI](https://github.com/ton198/quant-dataset/actions/workflows/ci.yml/badge.svg)](https://github.com/ton198/quant-dataset/actions/workflows/ci.yml)
 
 **English** | [简体中文](README.zh-CN.md)
 
-## What this is
+## Current contract and historical artifacts
 
-`data/output/` holds 23.9M rows of features that only use information available that day, plus the forward returns to predict.
-"Frozen" means the schema (`samples_v1`) is fixed and every file is locked by sha256: a rebuild from the same inputs should match byte for byte.
-This repo prepares data. It does not train models or run backtests — that belongs downstream.
+The single `samples` contract is finance-free and contains **132 physical columns**: 4 keys/flags + 43 raw features + 10 cross-sectional features + 43 missing indicators + 32 labels. Its ordered `manifest.feature_list` contains 96 features. The builder reads organized market/macro inputs and exclusions only; it does not read financial files or financial metadata. Financial status, where retained in an artifact, is `not_applicable` and does not claim coverage.
 
-| Fact | Value |
+**Archived publication record (2026-10-03):** the existing `data/output/` bundle was published with the historical manifest value `schema_version="samples_v3"`: **23,938,669 rows**, **6,532 tickers**, **132 physical columns**, and **96 features**. Treat this bundle as an unchanged, read-only artifact; this documentation does not republish it or rewrite its manifest. The former 147-column output remains at `data/output-v1-backup-20261003T172214933236Z`, and the frozen `data/baselines/samples_v1_financial_upgrade/` remains separately preserved. Its publication record reports an invariant projection with 0 differences; the 735-passed/2-skipped suite evidence was reused because code was unchanged, not rerun at publication. This is historical evidence only, not a result for current code or a new candidate, and makes no performance or financial-correctness claim. Records: `/tmp/opencode/v3_release_publication/report.json` and `data/.output-publication-20261003T172214933236Z.json` (`COMMITTED_V3_V1_BACKUP_RETAINED`).
+
+| Preserved historical `samples_v1` output/baseline | Recorded value |
 |---|---|
-| Rows × columns | 23,938,669 × 147 |
-| Stocks | 6,532 |
-| Trading days | 9,067 canonical sessions |
+| Rows × physical columns | 23,938,669 × 147 |
+| Stocks in `meta.parquet` | 6,532 |
+| Canonical sessions | 9,067 |
 | Coverage | 1990-01-02 – 2025-12-31 |
-| Storage | 36 yearly Parquet partitions + `meta` / `splits` / `manifest` / `qc` |
-| License | MIT |
 
-A *canonical session* is the shared trading calendar used to align every stock: a day counts when at least 500 common stocks (`is_common`) traded.
+A *canonical session* is a shared trading-calendar date with at least 500 common stocks (`is_common`) present.
 
-## What one row is
+## What one sample row is
 
-One row = one stock (`asset_id`) on one signal day (`date`).
-Features are what was knowable that day: 48 raw (`f_raw_*`: price/volume, financials, macro) + 15 cross-sectional (`f_cs_*`) + 48 missing flags (`miss_*`).
-Labels are the future: 1–30 session returns, plus `excess_5d` / `excess_21d` (market-relative).
+One row represents one ticker (`asset_id`) on one signal date (`date`). The `samples` contract has 43 raw market/macro features, 10 same-date cross-sectional transforms, 43 matching missing indicators, and 32 forward labels. Financial data is not a sample input.
 
 ```text
 signal day t             entry at t+1 open          exit at t+1+h open
     │                          │                            │
     │  features end at t       │  label window: h sessions
     └──────────────────────────┴────────────────────────────┘
-      h = 1..30 canonical sessions; the main targets use h = 5 and 21
+      h = 1..30 canonical sessions; excess targets use h = 5 and 21
 ```
 
-## 30-second quickstart
+## Build a separate candidate
 
-Read the output with DuckDB (a consumer-side tool, not a repo dependency):
+By default, the samples workspace root is the current working directory; set `--workspace-root PATH` to choose it explicitly. The default exclusions file is `<workspace_root>/config/universes/exclusions_v1.json`; a missing file is an error, and an explicit `--exclusions-file` path is resolved relative to the current working directory. The filename remains `exclusions_v1.json` and is not a sample product version.
 
-```python
-import duckdb
-
-con = duckdb.connect()
-df = con.execute("""
-    SELECT date, asset_id, excess_5d, excess_21d,
-           f_cs_momentum_120, f_cs_volatility_20
-    FROM read_parquet('data/output/samples/year=*/part-00000.parquet',
-                      hive_partitioning = true)
-    WHERE year BETWEEN 2019 AND 2020
-      AND is_common
-      AND flag_extreme_label = 0
-""").df()
-```
-
-Do not load all 23.9M rows at once — the float32 feature matrix is ~10 GB. Read by year.
-More loaders and pitfalls: [docs/user/recommended-usage.md](docs/user/recommended-usage.md).
-
-## How to use
-
-| Step | Do |
-|---|---|
-| 1. Split | Use `splits.json`: fit (1990–2018) to train, select (2019–2020) to tune, screen (2021–2024) for out-of-sample, reserve (2025) for one final test. Purge is already applied at build time — do not purge again. |
-| 2. Target | Train on `excess_5d` / `excess_21d`. They subtract the same-day equal-weight common-stock mean. Use `target_return_*` as auxiliary tasks only. |
-| 3. Clean | Drop or down-weight rows with `flag_extreme_label = 1` (120,510 rows, ≈0.5%): their label window crosses a price glitch, so the returns are unreliable. |
-
-Two things that bite most often:
-
-- **Survivorship bias**: the universe is today's SEC list and contains no delisted stocks. Trust `screen`, not absolute returns.
-- **Sparse financials**: ~96% missing, and missingness is not random (snapshot semantics — only the latest filing is visible). Model `miss_*`; never fill NaN with 0.
-
-Full workflow: [docs/user/recommended-usage.md](docs/user/recommended-usage.md).
-
-## Rebuild from scratch
-
-Prerequisites: Python ≥3.10 (CI covers 3.10–3.13), access to Yahoo / SEC / FRED, and a `config/secrets.toml` with `sec_user_agent` (SEC requires contact info) and `fred_api_key`.
+Build candidates only to a fresh output path. The guard protects `<workspace_root>/data/` and related raw/output/baselines locations identified from actual inputs; it rejects symlink targets, non-empty targets, and targets overlapping protected paths or actual inputs. Never target the preserved `data/output/`, backup, or baseline; if the example path exists, choose another unused path rather than deleting/reusing it.
 
 ```bash
-uv sync --frozen
-cp config/secrets.example.toml config/secrets.toml   # then fill in both keys
-
-PYTHONPATH=src .venv/bin/python -m cli.main download \
-  --stage all --start 1990-01-01 --end 2025-12-31 --workers 16
-PYTHONPATH=src .venv/bin/python -m cli.main build-samples
-
-.venv/bin/python -m pytest
+WORKSPACE_ROOT=$PWD
+CANDIDATE_DIR=/tmp/opencode/candidate-samples-finance-free
+test ! -e "$CANDIDATE_DIR" && test ! -L "$CANDIDATE_DIR" || { echo "Choose a new, unused, non-symlink candidate directory" >&2; exit 1; }
+PYTHONPATH=src .venv/bin/python -m cli.main build-samples \
+  --workspace-root "$WORKSPACE_ROOT" \
+  --data-dir data/organized --out "$CANDIDATE_DIR"
 ```
 
-`download` resumes after interruptions. `build-samples` clears and rebuilds `data/output/` every run.
-All flags and exit codes: [docs/user/cli.md](docs/user/cli.md).
+A candidate build needs existing organized market and macro panels. It does not read SEC financial files or financial metadata, run financial preflight/coverage/inventory, or download data. Verify new behavior with small independent current-contract fixtures and recorded invariants; a historical projection comparison is not the correctness oracle. Each publication needs its own recorded evidence. The historical release record above is not a test result for the current source tree.
 
-## Repository layout
+## Query an existing bundle
 
-| Path | What |
-|---|---|
-| `data/` | `raw/` (immutable snapshots) → `organized/` (per-ticker CSVs) → `output/` (the frozen dataset) |
-| `src/` | CLI entry, download/organize, `build_samples.py` |
-| `config/` | Universe lists, `sources.toml`, local `secrets.toml` (gitignored) |
-| `docs/` | `user/` guides and `developer/` contracts |
-| `tests/` | Offline pytest suite (baseline: 61 passed / 2 skipped) |
+Bundles stay as Parquet files. If you want the optional SQL command, install its extra and point it at the bundle you intend to read:
+
+```bash
+uv sync --frozen --extra query
+BUNDLE_DIR=/tmp/opencode/candidate-samples-finance-free
+quant-dataset query-samples --bundle "$BUNDLE_DIR" \
+  --sql 'SELECT COUNT(*) AS row_count FROM samples'
+```
+
+`query-samples` accepts only a current `samples` bundle and validates its strict manifest/schema and registered output hashes before querying; preserved historical bundles with `samples_v3` or the former 147-column layout are not supported by this command. Inspect those historical artifacts with Python/PyArrow, or query a fresh candidate such as the path above. Queries read in place and do not create a persistent database or migrate data. The regular pipeline install is unchanged. See the [query guide](docs/user/query.md) for date filters, result limits, and read-only rules.
+
+## Existing download/organize pipeline
+
+The existing `download` and `organize` commands are unchanged. The SEC `financials` stage still fetches Company Facts, submissions, and historical submissions-page JSON; it does not fetch full filing HTML/iXBRL. Separately, bounded `filings catalog/download/parse/verify/query` commands use explicit archive paths and the local cache. Two private parser pilots remain independent: first-five archive v7 and second-ten archive v15. They are not `samples` inputs or broad issuer-coverage claims; the v15 active snapshot contains 25,656 facts and one primary-anchored RBC IXDS group with 7,543 original occurrences, while RBC raw coverage remains partial. Organized `financials.csv` and selected `financial_events_v1` extracts remain separate products; the latter covers selected nine-concept facts, not all XBRL or complete filings. See the [filing guide](docs/user/filings.md), [CLI manual](docs/user/cli.md), [download internals](docs/developer/download.md), and [archive status](docs/developer/financial-filing-archive.md).
 
 ## Documentation
 
 | User guides | Developer docs |
 |---|---|
-| [CLI manual](docs/user/cli.md) — commands, secrets, exit codes | [AGENT.md](AGENT.md) — task routing for agents and contributors |
-| [Data format](docs/user/data-format.md) — all 147 columns, label formulas | [architecture.md](docs/developer/architecture.md) — five-stage data flow |
-| [Recommended usage](docs/user/recommended-usage.md) — training workflow, pitfalls | [data-contracts.md](docs/developer/data-contracts.md) — layer contracts, baselines |
-| | [samples.md](docs/developer/samples.md) — canonical calendar, purge, partitions |
-| | [download.md](docs/developer/download.md) — endpoints, resume, CIK overrides |
-| | [known-quirks.md](docs/developer/known-quirks.md) — "looks like a bug, isn't" |
-| | [testing.md](docs/developer/testing.md) — test layout, offline fixtures |
-
-## Development
-
-Baseline: `pytest` 61 passed / 2 skipped, `ruff check` and `ruff format --check` clean; CI runs the same on Python 3.10–3.13.
-Contributions: [CONTRIBUTING.md](CONTRIBUTING.md). Agents: start at [AGENT.md](AGENT.md).
+| [CLI manual](docs/user/cli.md) — existing downloads, candidate build, and CLI commands | [AGENT.md](AGENT.md) — task routing and invariants |
+| [Filing guide](docs/user/filings.md) — bounded catalog, acquisition, parsing, verification, query, pilot evidence, and limits | |
+| [Query guide](docs/user/query.md) — optional SQL over existing sample Parquet bundles | |
+| [Data format](docs/user/data-format.md) — the single samples contract and preserved artifacts | [architecture.md](docs/developer/architecture.md) — data flow and input separation |
+| [Recommended usage](docs/user/recommended-usage.md) — candidate consumption caveats | [data-contracts.md](docs/developer/data-contracts.md) — layers, active contract and archived schema facts |
+| | [samples-architecture.md](docs/developer/samples-architecture.md) — package and migration contract |
+| | [samples.md](docs/developer/samples.md) — sample features, labels, and current verification cues |
+| | [download.md](docs/developer/download.md) — existing source behavior |
+| | [financial-filing-archive.md](docs/developer/financial-filing-archive.md) — implemented archive boundary and deferred processing status |
+| | [known-quirks.md](docs/developer/known-quirks.md) — data-source limitations |
+| | [testing.md](docs/developer/testing.md) — offline tests and validation |
 
 ## Known limitations
 
-- **Survivorship**: the universe is today's SEC ticker list; delisted stocks are absent, so history reads better than it was.
-- **FRED is not vintage**: macro features use latest revised values, so they contain hindsight.
-- **Adjusted open is not a fill price**: labels come from `open × adj_close / close`, not executable trades.
-- **Financial coverage is sparse and non-random**: ~96% missing, skewed toward filing-dense periods and large caps.
+- **Survivorship:** the universe is based on a current SEC ticker list and does not provide delisted-stock history.
+- **FRED is not vintage:** macro inputs use latest-revised values and an approximate visibility date.
+- **Adjusted open is not an executable fill:** label prices are adjusted values, not simulated trades or costs.
+- **Financial data is separate:** financial features and financial missingness are absent from the `samples` contract. Existing structured SEC extracts remain available separately but do not constitute a complete filing archive.
+- **Legacy bundles are not product modes:** the archived `data/output/` bundle retains its original `samples_v3` manifest value, and the former 147-column artifact is preserved at `data/output-v1-backup-20261003T172214933236Z`. These paths are read-only historical artifacts, not version-selectable `samples` products; the frozen baseline remains separately retained.
 
-More: [docs/developer/known-quirks.md](docs/developer/known-quirks.md).
+More detail: [known-quirks.md](docs/developer/known-quirks.md).
 
 ## License
 

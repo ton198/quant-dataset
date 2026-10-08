@@ -22,6 +22,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["ruff", "pytest"]
+extraction = ["lxml>=5,<7"]
+model = ["openai>=1.0,<3"]
+filings = ["arelle-release==2.46.0"]
+query = ["duckdb==1.5.6"]
 # torch is not imported anywhere in src/ or tests/; it is only needed by downstream
 # training repos, so it lives behind the `train` extra.
 train = ["torch>=2.14.0"]
@@ -29,13 +33,11 @@ train = ["torch>=2.14.0"]
 [project.scripts]
 quant-dataset = "cli.main:main"
 
-[tool.setuptools]
-# src/build_samples.py is a top-level module (not a package); `packages.find` alone
-# would omit it from wheels/editable installs.
-py-modules = ["build_samples"]
-
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"filings._vendor.sec_transforms" = ["UPSTREAM.json", "LICENSE-APACHE-2.0.txt", "NOTICE.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -43,6 +45,7 @@ testpaths = ["tests"]
 [tool.ruff]
 target-version = "py310"
 line-length = 100
+extend-exclude = ["src/filings/_vendor/sec_transforms"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
@@ -50,10 +53,8 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.ruff.lint.per-file-ignores]
 # Tests bootstrap `src/` onto sys.path before importing the pipeline modules.
 "tests/*" = ["E402"]
-# These modules embed single-line human-readable contract strings that are published
-# verbatim into manifest.json / qc_report outputs; wrapping them is a content change,
-# not a mechanical reformat.
-"src/build_samples.py" = ["E501"]
+# This module embeds human-readable contract strings published verbatim in manifests/reports.
+"src/samples/builder.py" = ["E501"]
 # organize_financials is an intentional re-export consumed as
 # `download.organize.organize_financials` by manager.py and tests; without the F401
 # ignore ruff would delete a public attribute.

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"
+            xmlns:link="http://www.xbrl.org/2003/linkbase"
+            xmlns:xlink="http://www.w3.org/1999/xlink"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xmlns:ex="https://example.test/filings"
+            xsi:schemaLocation="https://example.test/filings ../taxonomy/root.xsd">
+  <link:schemaRef xlink:type="simple" xlink:href="../taxonomy/root.xsd#root"/>
+  <link:linkbaseRef xlink:type="simple" xlink:href="labels.xml"/>
+  <ex:ordinary-link href="https://not-allowed.example.invalid/page.html"/>
+</xbrli:xbrl>

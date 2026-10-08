@@ -2,8 +2,10 @@
 
 # Test Layout, How to Run, and Verification Gates
 
-> Scope: adding/changing tests, deciding whether a change can merge, and reproducing the smoke gate.
+> Scope: adding/changing tests, deciding whether a change can merge, and reproducing assigned verification.
 > Related: [AGENT.md](../../AGENT.md) §1 routing table, [download.md](download.md), [samples.md](samples.md), [known-quirks.md](known-quirks.md).
+>
+> **Historical evidence note:** Exact test counts, skips, and smoke criteria below describe earlier repository snapshots only; they are not current `samples` validation results. The current sample test approach uses independent current-contract fixtures and invariants, not cross-generation projection or financial calibration tools. Use current test paths from the worktree when running assigned checks.
 
 ## 1. How to run and the baseline
 
@@ -13,8 +15,8 @@ PYTHONPATH=src .venv/bin/python -m pytest tests/ -q
 # Equivalent: each test file inserts src/ into sys.path itself, so this also works
 .venv/bin/python -m pytest -q
 
-# Single file
-PYTHONPATH=src .venv/bin/python -m pytest tests/test_build_samples.py -q
+# Single assigned file (replace with the path present in the worktree)
+PYTHONPATH=src .venv/bin/python -m pytest tests/<assigned-test-file>.py -q
 PYTHONPATH=src .venv/bin/python -m pytest tests/test_download.py -q -k cli
 ```
 
@@ -27,7 +29,7 @@ PYTHONPATH=src .venv/bin/python -m pytest tests/test_download.py -q -k cli
 
 Note: the test process does not depend on a real `data/`; only `test_load_sources_parses_provider_settings` and the CLI dry-run subprocess read the repository's `config/sources.toml` (no network).
 
-## 2. Test file map
+## 2. Historical test file map (snapshot only; counts may have changed)
 
 | File | Count | Coverage | Representative tests |
 |---|---|---|---|
@@ -54,14 +56,14 @@ If you change `_market_quality` or the organize filter order, these two skips be
 | Convention | Description |
 |---|---|
 | Temp directories | Always `tmp_path`; tests never write the repository's `data/` (the only exception is the read-only `load_sources`) |
-| Fake raw construction | `test_download._write_market_csv/_bar` builds Yahoo-shaped CSVs; `test_organize_financials._write_company_facts_fixture/_fact` builds facts+submissions+manifest; `test_build_samples._fixture` builds a complete `organized/` (5 tickers: AAA/BBB/CCC/UNIT-WT/DROP + macro + exclusions) |
-| Direct internal calls | Tests intentionally call `_organize_tickers`, `_submission_rows`, `_financial_features`, `organize_financials`, etc. directly, bypassing the CLI for point assertions |
+| Fake raw construction | Download and organizer tests use local-shaped fixtures; current sample fixtures live under `tests/fixtures/samples/current/` and define small fixed inputs plus independent expected values. |
+| Direct internal calls | Tests may call organizer or sample-package helpers directly, bypassing the CLI for point assertions; use current imports and test real file-access behavior rather than retaining no-op compatibility helpers. |
 | monkeypatch | Only for paths and IO tracing: `universe.TICKER_CIK_OVERRIDES_PATH` (ticker_overrides) and a wrapped `Path.read_text` (organize_financials' "does not read unrelated files" assertion) |
 | Cache isolation | Tests touching `_TICKER_CACHE` use `_reset_ticker_cache(raw_dir)` (or clear it entirely) |
 | Network | Zero real requests; the network branches of `market.fetch_market`/`financials.fetch_financials`/`macros.fetch_macros`/`universe.fetch_universe` **currently have no test coverage** (see §6) |
 | Subprocess CLI | `_run_cli` uses `sys.executable -m cli.main` with an injected `PYTHONPATH=src`, cwd fixed to the repository root, timeout=10s |
 
-## 5. Smoke gate (point checks first, full run second)
+## 5. Existing-source smoke examples (only when assigned; not a samples release gate)
 
 ### 5.1 Changing financial extraction (`organize_financials.py`)
 
@@ -70,7 +72,7 @@ If you change `_market_quality` or the organize filter order, these two skips be
 PYTHONPATH=src .venv/bin/python -m cli.main download --stage organize --force-rebuild --tickers AAPL,XOM
 ```
 
-Acceptance criteria (current repository baseline):
+Recorded organizer smoke expectations (historical snapshot; re-check against current fixtures before treating as an acceptance result):
 
 | Check | Expectation |
 |---|---|
@@ -81,15 +83,20 @@ Acceptance criteria (current repository baseline):
 
 Only after this passes run the full `download --stage all` (or at least organize for every ticker).
 
-### 5.2 Changing sample logic (`build_samples.py`)
+### 5.2 Changing sample logic (`samples.builder`)
 
 ```bash
-PYTHONPATH=src .venv/bin/python -m pytest tests/test_build_samples.py -q
-# Real-data check (do it on a small copy first, see samples.md §9)
-PYTHONPATH=src .venv/bin/python -m cli.main build-samples
+# Run only the current-contract sample tests assigned for the change.
+# Confirm migrated paths under tests/; fixture definitions live under tests/fixtures/samples/current/.
+
+# If a candidate build is assigned, use a new path; never target data/output or a baseline.
+CANDIDATE_DIR=/tmp/opencode/candidate-samples-finance-free
+test ! -e "$CANDIDATE_DIR" && test ! -L "$CANDIDATE_DIR" || { echo "Choose a new, unused candidate directory" >&2; exit 1; }
+PYTHONPATH=src .venv/bin/python -m cli.main build-samples \
+  --workspace-root "$PWD" --data-dir data/organized --out "$CANDIDATE_DIR"
 ```
 
-Acceptance criteria: `manifest.json`'s `row_counts.samples`, `splits.json`'s purge rows, and `qc_report.json`'s `flag_extreme_label_count` match the [AGENT.md](../../AGENT.md) §2 invariant 5 baseline (23,938,669 / 120,987+139,158+182,398 / 120,510) — **financial-feature-only changes must keep them bit-for-bit identical**; the schema must still be date32 + float32 + uint8 (`test_outputs_use_date32_and_float32`).
+The maintained `samples` contract is finance-free: 43 raw + 10 CS + 43 MISS = 96 features and 132 physical columns. Current focused sample tests include `tests/test_samples_current_contract.py`, `tests/test_samples_semantic_regression.py`, `tests/test_samples_integrity_regression.py`, `tests/test_samples_safety_regression.py`, `tests/test_query_samples.py`, `tests/test_verification_tools.py`, and `tests/test_build_samples.py` as relevant; small fixtures live in `tests/fixtures/samples/current/`. Test independently authored expected values for labels and edge cases, exact schema/order/dtypes, 43-raw `missing_frac`, keys/flags/splits/purge, ticker-failure and finance-isolation invariants. Verify deterministic outputs, input content provenance, strict manifest/output verification, and workspace/data sibling path protections against implementation. Use only a fresh candidate path; removed projection tools are not a correctness gate. The old 735-passed/2-skipped and archived projection records are historical only. Do not claim a final PASS without evidence from the assigned current run.
 
 ### 5.3 Changing download/progress/overrides
 
@@ -111,7 +118,7 @@ Acceptance: the dry run only prints the plan and writes nothing; after an overri
 | Change overrides/force-rebuild | Forward, reverse, missing-file fallback, CLI flag, force-rebuild of completed items | Template exists |
 | Change progress/locking | Round trip, force/resume, stale/live/malformed lock | Template exists |
 | Change market quality/derived columns | One valid bar + one invalid high + negative price + adjustment_factor/return | Template exists |
-| Change labels/features | Expected-value assertions in the `tests/test_build_samples.py` fixture; new columns must assert dtype and a miss indicator | Template exists |
+| Change labels/features | Independent expected-value cases in `tests/fixtures/samples/current/`; new columns assert schema/dtype and null-indicator behavior | Current-contract fixture suite |
 | Change purge/splits | 31-session window, `rows_by_split` identity, end-of-data NaN retention | Template exists |
 | Add a network download branch | **Currently empty**: at minimum add offline tests for "cache hit does not re-download", "corrupt manifest fallback", and "ragged/non-JSON error" (monkeypatch urlopen or inject fixture files) | To be added |
 | Determinism | Suggested: "rebuilding twice from identical input yields identical manifest.outputs hashes" | Not automated |

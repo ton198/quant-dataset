@@ -1,0 +1,12 @@
+{
+  "directory": {
+    "name": "/Archives/edgar/data/7654321/000765432124000004/",
+    "item": [
+      {"name": "current-report.htm", "type": "text", "size": "21000"},
+      {"name": "interim-statements.pdf", "type": "application/pdf", "size": "340000"},
+      {"name": "services-agreement.htm", "type": "text", "size": "45000"},
+      {"name": "ex99.3.htm", "type": "text", "size": "6000"},
+      {"name": "logo.png", "type": "image", "size": "2000"}
+    ]
+  }
+}

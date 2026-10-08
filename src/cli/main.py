@@ -1,14 +1,16 @@
-"""Command-line entry point for the download-only pipeline."""
+"""Command-line entry point for dataset download, sample builds, and queries."""
 
 from __future__ import annotations
 
 import argparse
+import csv
 import logging
+import sys
 from datetime import date
 from pathlib import Path
 
-from build_samples import build_samples
 from download.manager import run_download
+from samples.builder import build_samples
 
 
 def _date(value: str) -> date:
@@ -20,7 +22,7 @@ def _date(value: str) -> date:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="quant-dataset", description="Download and organize market data"
+        prog="quant-dataset", description="Download, organize, query, and catalog dataset data"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     download = subparsers.add_parser("download", help="download SEC, Yahoo, and FRED data")
@@ -65,23 +67,73 @@ def _parser() -> argparse.ArgumentParser:
     samples.add_argument(
         "--out",
         type=Path,
-        default=Path("data/output"),
-        help="sample bundle output directory (default: data/output)",
+        default=Path("data/samples-output"),
+        help="sample bundle output directory (default: data/samples-output)",
+    )
+    samples.add_argument(
+        "--workspace-root",
+        type=Path,
+        default=Path.cwd(),
+        help="workspace root for default exclusions and protected data paths (default: cwd)",
     )
     samples.add_argument(
         "--exclusions-file",
         type=Path,
         help="exclusion JSON (defaults to config/universes/exclusions_v1.json)",
     )
+    query = subparsers.add_parser(
+        "query-samples", help="run a bounded read-only SELECT on an existing sample bundle"
+    )
+    query.add_argument(
+        "--bundle", type=Path, required=True, help="existing sample bundle directory"
+    )
+    query.add_argument("--sql", required=True, help="one SELECT statement to execute")
+    query.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="maximum output rows (1..1000; default: 20)",
+    )
+    from filings.cli import add_filings_parser
+
+    add_filings_parser(subparsers)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Parse CLI arguments and return the download manager's exit code."""
+    """Parse CLI arguments and return the selected command's exit code."""
     args = _parser().parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    if args.command == "filings":
+        from filings.cli import run_filings_command
+
+        return run_filings_command(args)
+    if args.command == "query-samples":
+        if not 1 <= args.limit <= 1000:
+            _parser().error("--limit must be between 1 and 1000")
+        from samples.query import QuerySamplesError, query_samples
+
+        try:
+            result = query_samples(args.bundle, args.sql, limit=args.limit)
+        except QuerySamplesError as exc:
+            _parser().error(str(exc))
+        logging.getLogger(__name__).info(
+            "Query completed for schema_version=%s; emitted %d rows (limit=%d)",
+            result.schema_version,
+            len(result.rows),
+            args.limit,
+        )
+        writer = csv.writer(sys.stdout)
+        writer.writerow(result.columns)
+        writer.writerows(result.rows)
+        return 0
     if args.command == "build-samples":
-        result = build_samples(args.data_dir, args.out, args.exclusions_file)
+        result = build_samples(
+            args.data_dir,
+            args.out,
+            args.exclusions_file,
+            workspace_root=args.workspace_root,
+        )
         logging.getLogger(__name__).info(
             "Built %s rows (%s to %s) at %s",
             result["rows"],

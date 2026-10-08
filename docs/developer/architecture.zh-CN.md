@@ -2,104 +2,92 @@
 
 # 架构
 
-定位：**从外部数据源到冻结训练样本的离线流水线**——`data/raw/`（只追加的原始快照）→ `data/organized/`（按 ticker 的日频面板）→ `data/output/`（样本包 + 审计文件）。行为由 `src/` 代码与 `config/` 定义；`data/`、`logs/`、`archive/` 不进版本控制。
+本仓库将既有行情/SEC/FRED 摄入与唯一的不含财务数据 `samples` builder 分开，并提供可选的 `query-samples` 查询当前契约 bundle。迁移到五模块 `samples` 包及共享只读 SQL guard 已在当前源码树实现，且未改变 download 或 organize 行为。2026-10-03 发布在 `data/output/` 的 bundle 保留历史 manifest 值 `schema_version="samples_v3"`；原 147 列产物与冻结 baseline 分别保留。这些包保持原样只读；本文不表示重新发布。查询不增加新存储格式。
 
-改代码前先读 [AGENT.zh-CN.md](../../AGENT.zh-CN.md) 的任务路由表；各层字段级契约见 [data-contracts.zh-CN.md](data-contracts.zh-CN.md)；下载细节见 [download.zh-CN.md](download.zh-CN.md)；样本细节见 [samples.zh-CN.md](samples.zh-CN.md)。
+改代码前先读 [AGENT.zh-CN.md](../../AGENT.zh-CN.md)。唯一样本契约与包迁移见 [samples-architecture.md](samples-architecture.md)、[samples.zh-CN.md](samples.zh-CN.md) 与 [data-contracts.zh-CN.md](data-contracts.zh-CN.md)。既有数据源行为见 [download.zh-CN.md](download.zh-CN.md)。独立申报档案有多个有界私有 pilot；它们都不是 `samples` 输入，也不代表广泛覆盖。当前结果与限制见 [financial-filing-archive.zh-CN.md](financial-filing-archive.zh-CN.md) 与[用户指南](../user/filings.zh-CN.md)。
 
 ## 1. 数据流总览
 
-```
-外部源                                  data/raw/（payload 文件名 = sha256，只追加）            data/organized/                 data/output/
-──────                                  ──────────────────────────────────────────────            ────────────────                ────────────
-SEC company_tickers_exchange ─┐
-config/universes/*.json ──────┴──→  sec/universe/<sha256>.json ──────┐
-Yahoo Finance ───────────────────→  yahoo/<TICKER>/<start>_<end>.csv  ├─→ stocks/<T>/market.csv     ─┐
-SEC companyfacts / submissions ──→  sec/financials/<sha256>.json      │   stocks/<T>/financials.csv ─┼─→ build-samples ─→ samples/year=YYYY/
-（含历史申报分页）                   + manifest.json（key → 版本列表）   │   shared/macro.csv          ─┘      + meta / manifest / splits
-FRED observations ───────────────→  fred/<SERIES>/<sha256>.json       │                                          / qc_report
-                                    + manifest.json                   ┘
+```text
+既有数据源                    data/raw/                         data/organized/                  samples 候选
+──────────                    ─────────                         ────────────────                  ───────────────
+Yahoo 行情 ───────────────→ yahoo/<T>/<range>.csv ──────────→ stocks/<T>/market.csv ─────┐
+FRED observations ────────→ fred/<series>/<sha>.json ───────→ shared/macro.csv ─────────┼→ build-samples
+                                                                                          │  仅全新 --out
+SEC CompanyFacts/submissions → sec/financials/<sha>.json ─┐                                │
+                         + manifest.json                   └→ financials.csv / selected      ┘
+                                                            financial_events_v1 artifact
+                                                            （独立存在；builder 不读取）
 ```
 
-生命周期五个环节：
+```text
+已有样本包（Parquet 文件 + manifest）
+        ├── Python + PyArrow 直接读取
+        └── 可选 query-samples → 内存中的 DuckDB → CSV 结果
+```
 
-1. **universe**：抓 SEC `company_tickers_exchange` 快照 → 按 `config/sources.toml [universe].exchanges` 过滤（当前 Nasdaq + NYSE）→ 合并 `config/universes/ticker_cik_overrides.json` 人工纠正（当前仅 `XOM → 0000034088`）。
-2. **下载**（CLI stage：`market` / `financials` / `macros`）：Yahoo 日线；SEC Company Facts + Submissions + 历史申报分页；FRED 11 条宏观序列。raw 层 payload 只追加、不改写。
-3. **organize**（CLI stage：`organize`）：行情清洗 + 派生列；财报 as-of 对齐到 session；宏观 wide 表；按 ticker 多进程（`--workers`，默认 16）。
-4. **build-samples**（独立命令）：用全市场行情自举 canonical calendar → 流式逐 ticker 生成特征/标签 → 逐日截面 rank → 按年分区写 parquet + 审计文件。
-5. **消费**：训练侧按 `data/output/manifest.json` 哈希验货、按 `splits.json` 选窗，**不再自行 purge**。
+SEC raw cache 仍包含 Company Facts、submissions 与历史 submissions-page JSON；它与显式 root filing archive 分开。`filings catalog` 将本地已验证 submissions 复制到 archive；有界 `filings download` 存入选定 inventory/文档；`filings parse` 处理已存在的选中文件并发布 parser attempts 及实际提取的 facts/sections。首批五份私有 pilot 为 v7（6,017 facts/165 sections）；独立第二批十份、8 CIK pilot 为 v15（25,656 facts/95 sections；15 full text、6 full XBRL、4 unsupported XBRL）。RBC 40-F 有一个 primary 锚定、7,543-occurrence group parse（主文档 40、EX2 7,503），但 raw coverage 仍 `partial`。两个 archive 相互独立，不进入 `samples`。organized `financial_events_v1` 仍是选定九概念抽取。Query 使用内存 DuckDB，不增加持久数据库或迁移样本数据。
+
+既有生命周期阶段：
+
+1. **universe：** 获取 SEC `company_tickers_exchange`，应用配置的 exchange filter 和 ticker→CIK override。
+2. **download：** 既有 Yahoo 行情、SEC Company Facts/submissions/历史分页及配置的 FRED 序列；行为保持不变。
+3. **organize：** 写清洗后的行情、宏观面板以及独立保留的既有财务输出。
+4. **build-samples：** 从行情面板建立 canonical calendar，构建非财务特征/标签、截面 rank 与 QC，再写到全新候选目录。它不读取财务文件或财务 `_meta.json` 记录，也不做财务预检、覆盖率或输入盘点；当前 manifest 不包含财务状态声明。
+5. **消费：** 校验候选 `manifest.json` 与输出 hashes，按 `splits.json` 选择数据。purge 已在构建期完成，下游不再 purge。
+6. **可选样本查询：** `query-samples` 只接受严格的当前 `samples` 契约；它核验 schema/feature registry/fingerprints 及 manifest 登记输出的全部 hash、字节数和行数，再读取样本 Parquet 文件。该完整性核验不替代独立语义或发布验证。
+7. **独立申报档案：** `filings catalog` 读取本地 cache；有界 `filings download` 获取选定 inventory/文档；`filings parse` 处理已有文件并发布 parse/fact/text/dependency 表；`verify` 与 `query` 操作显式 archive。此流程不进入 `samples`。当前有首批五份 v7 和独立第二批十份 v15 两个有限 real pilot；详见 [financial-filing-archive.zh-CN.md](financial-filing-archive.zh-CN.md) 的 case 状态与限制。
+
+归档的 `data/output/` bundle 在原始 `samples_v3` manifest 标签下有 96 个特征、132 个物理列。原 147 列 output 保留在 `data/output-v1-backup-20261003T172214933236Z`；冻结 baseline 仍独立保留。这些是只读历史产物事实，不是新产品契约。
 
 ## 2. 模块职责
 
-| 模块 | 职责 | 关键入口 |
-|---|---|---|
-| `src/cli/main.py` | 唯一命令行入口；参数解析、阶段展开、退出码 | `_parser()`、`main()` |
-| `src/download/manager.py` | 编排一次 download 运行：ticker 选择、进度锁、逐 stage 执行、organize 进程池 | `run_download()`、`_organize_tickers()` |
-| `src/download/universe.py` | SEC 名单快照（内容寻址缓存）+ ticker→CIK override 合并 | `fetch_universe()`、`load_ticker_cik_overrides()` |
-| `src/download/market.py` | Yahoo 日线下载（yfinance，auto_adjust=false） | `fetch_market()` |
-| `src/download/financials.py` | SEC companyfacts / submissions / 历史分页下载；内容寻址 + manifest 追加 | `fetch_financials()` |
-| `src/download/macros.py` | FRED observations 下载；内容寻址 + manifest 追加 | `fetch_macros()` |
-| `src/download/organize.py` | 行情清洗/派生列/`quality_flag`；macro wide 表与可见性规则；写 `_meta.json` | `organize_market()`、`organize_macros()` |
-| `src/download/organize_financials.py` | 申报事实抽取（concept 白名单）、fiscal 标识回退、按 session as-of 展开 | `organize_financials()` |
-| `src/download/progress.py` | 断点续跑工作清单（原子写）+ PID 文件锁（死锁自动回收） | `initialize()`、`save_atomic()`、`acquire_lock()` |
-| `src/download/config.py` | 读 `config/sources.toml` / `config/secrets.toml` 并解析为 frozen dataclass | `load_sources()`、`load_secrets()` |
-| `src/download/errors.py` | 三类领域异常 | `ConfigError` / `DownloadError` / `OrganizeError` |
-| `src/build_samples.py` | 样本长表：canonical calendar、特征/标签、purge、截面 rank、分区写出与审计 | `build_samples()` |
-| `config/` | 端点与阶段配置、密钥（gitignored）、universe 覆盖/排除 | `sources.toml`、`secrets.toml`、`universes/*.json` |
-| `tests/` | 全部离线测试（6 个文件） | 见 [testing.zh-CN.md](testing.zh-CN.md) |
+| 模块 | 职责 |
+|---|---|
+| `src/cli/main.py` | `download`、`build-samples` 与可选 `query-samples` CLI 解析和分发 |
+| `src/samples/query.py` | 已实现的只读 SQL 查询，仅支持严格当前契约样本包；不创建持久化数据库 |
+| `src/query_support/readonly_sql.py` | `samples` 与 filings query consumer 已共用的中立 SQL guard |
+| `src/filings/{cli,workflow,archive,acquisition,processing,query}.py` | 独立 catalog/archive、有界 SEC 获取、offline-first 解析集成、档案核验与 descriptor-backed 查询 |
+| `src/filings/config.py` | Acquisition 与显式 taxonomy 准备读取 SEC-only contact；不需要 FRED key |
+| `src/filings/{parse_xbrl,parse_text,dependencies,parsing_models}.py` | 保留来源的本地 parser、有界 taxonomy 依赖准备与 parser-owned Arrow occurrence schema |
+| `src/download/manager.py` | 既有 download-stage 编排、进度/锁与并行 organize |
+| `src/download/universe.py` | SEC ticker snapshot 与 ticker→CIK override |
+| `src/download/market.py` | Yahoo 日线下载 |
+| `src/download/financials.py` | 既有 Company Facts/submissions/历史分页 JSON 缓存；不含完整 filing HTML |
+| `src/download/macros.py` | 既有 FRED observations 下载 |
+| `src/download/organize.py` | 行情清理/派生值、宏观对齐与 organize metadata |
+| `src/download/organize_financials.py` | 既有选定概念财务抽取与旧 daily snapshot |
+| `src/download/financial_events.py` | 既有选定 `financial_events_v1` event/fact Parquet；与样本构建分离 |
+| `src/samples/{__init__,builder,query,contracts,validation}.py` | 当前五文件包，实现唯一 finance-free `samples` 产品。旧顶层模块和历史工具已移除；见 [source-layout-audit.md](source-layout-audit.md) 中标明日期的迁移前快照及当前源码树。 |
+| `config/` | 数据源、密钥模板、universe override 与 exclusions |
+| `tests/` | 离线测试与 fixtures |
 
 ## 3. 数据落点与生命周期
 
-| 落点 | 生产者 | 内容 | 更新语义 | 消费者 |
-|---|---|---|---|---|
-| `data/raw/yahoo/<T>/<start>_<end>.csv` | `market.fetch_market` | yfinance 原始 CSV（Adj Close/Close/Dividends/High/Low/Open/Stock Splits/Volume） | 同名重下覆盖（**非**内容寻址） | `organize.organize_market` |
-| `data/raw/sec/universe/<sha256>.json` | `universe.fetch_universe` | 全量 SEC 名单快照（`fields`/`data`） | 新内容新文件；文件名 = 内容 sha256，读取时校验 | `manager._cached_universe`、`organize_financials._ticker_mappings` |
-| `data/raw/sec/financials/<sha256>.json` | `financials.fetch_financials` | companyfacts / submissions / 历史分页 payload | 只追加，从不改写 | `organize_financials` |
-| `data/raw/sec/financials/manifest.json` | 同上 | `logical_key` → 版本列表（path/sha256/url/...） | tmp + rename 原子替换，仅追加版本 | 同上 |
-| `data/raw/fred/<SERIES>/<sha256>.json` + `fred/manifest.json` | `macros.fetch_macros` | FRED observations | 同上（append-only manifest） | `organize.organize_macros` |
-| `data/organized/stocks/<T>/market.csv` | `organize.organize_market` | 清洗后的行情面板 | 重跑覆盖；`_meta.json` 记录输入/输出哈希 | `build_samples` |
-| `data/organized/stocks/<T>/financials.csv` | `organize_financials` | session 级 as-of 财报快照 | 重跑覆盖 | `build_samples` |
-| `data/organized/stocks/<T>/_meta.json` | 两个 organize | 完成标记 + 输入/输出 sha256 + row_counts | 重跑合并更新 | `manager._ticker_is_organized` |
-| `data/organized/shared/macro.csv` | `organize.organize_macros` | session 对齐宏观 wide 表 | 重跑覆盖 | `build_samples` |
-| `data/output/{samples,meta.parquet,manifest.json,splits.json,qc_report.*}` | `build_samples` | 样本包 | 每次全量重建（先清空旧输出） | 训练侧 |
-| `data/.download_progress{,.tmp,.lock}` | `progress` | 断点续跑工作清单、写临时文件、PID 锁 | 原子替换；`--force` 丢弃重建 | 仅 `manager` |
-| `logs/`、`archive/` | 驱动脚本/人工 | 运行日志、历史冷存 | gitignored，手动管理 | 无 |
+| 路径 | 生产者 | 内容/更新语义 | 是否为 `samples` 输入 |
+|---|---|---|---|
+| `data/raw/yahoo/<T>/<start>_<end>.csv` | 既有行情下载器 | Yahoo CSV；相同区间文件名可能被覆盖 | organize 后间接读取 |
+| `data/raw/sec/universe/<sha256>.json` | 既有 universe 下载器 | 内容寻址名单快照 | 否 |
+| `data/raw/sec/financials/<sha256>.json` + `manifest.json` | 既有 SEC financials 下载器 | Company Facts、submissions、历史分页 payload；内容寻址且 manifest 追加版本 | 否 |
+| 显式 filing archive run root（例如 `data/filings/pilot`） | `filings catalog/download/parse` | 独立不可变 source CAS 与 manifest 列出的 snapshot；只有 processing 发布后才有 parser-owned `facts`/`sections` 与辅助 `parses`/`dependencies` | 否 |
+| `data/raw/fred/<SERIES>/<sha256>.json` + manifest | 既有宏观下载器 | FRED observations 与版本 | organize 后间接读取 |
+| `data/organized/stocks/<T>/market.csv` | `organize_market` | 清洗后行情面板 | **是** |
+| `data/organized/shared/macro.csv` | `organize_macros` | 按 session 对齐的宏观面板 | **是** |
+| `data/organized/stocks/<T>/financials.csv` | `organize_financials` | 既有每日整份财报 snapshot，语义不变 | **否** |
+| `data/organized/stocks/<T>/financial_events.parquet` 与 `financial_facts.parquet` | 既有财务 organizer | 选定九概念的 `financial_events_v1`；不是完整 archive | **否** |
+| `data/organized/stocks/<T>/_meta.json` | 既有 organize 函数 | raw/organized 输入输出来源，包含旧财务 artifact 记录 | builder 不读其中财务记录 |
+| 全新候选输出路径（CLI 默认：`data/samples-output`） | `build-samples` | 单一 `samples` 契约、meta、split/manifest/QC；执行安全目标检查 | 输出 |
+| 现有 `data/output/` | 归档 daily bundle | 2026-10-03 manifest 原值为 `schema_version="samples_v3"` | 只读历史产物；不得作为候选目标 |
+| v1 backup 与冻结 baseline | 保留的历史参考 | `data/output-v1-backup-20261003T172214933236Z` 与 `data/baselines/samples_v1_financial_upgrade/` | 独立保留，不覆盖 |
 
-配置与运行状态补充：
+## 4. 既有摄入与模块化申报档案
 
-| 路径 | 内容 |
-|---|---|
-| `config/sources.toml` | `[universe]` 端点与 exchange 白名单；`[market]`/`[financials]`/`[macros]` 节流、超时、重试；`[macros].series` 序列清单；`[download]` 路径 |
-| `config/secrets.toml` | `[secrets] sec_user_agent`、`fred_api_key`；已 gitignore（模板 `secrets.example.toml`） |
-| `config/universes/ticker_cik_overrides.json` | ticker→CIK 人工纠正（当前 XOM → 0000034088） |
-| `config/universes/exclusions_v1.json` | 样本构建排除名单（当前 AYA、FUND） |
-| `data/.download_progress` | JSON 工作清单：`run_id`、`started_at_utc`、`universe_source`、`stages{stage:{item: done / pending / failed:...}}`；配套 `.tmp`（写临时）与 `.lock`（PID 锁） |
-| `archive/` | 本地冷存（如 `2026-09-24_pre_download_v2/` 为迁移前整仓备份）；不进 git，人工管理 |
+当前 `download --stage financials` 仍是 Company Facts/submissions/历史分页流程，不抓取完整 filing 文档。独立的 `filings catalog/download/parse/verify/query` 使用显式 archive root：catalog 仅读 cache；download 有界；parse 只处理已存在的选中文件，默认离线；taxonomy 准备必须显式 opt-in；query 只读 manifest 实际列出的表。filing archive pilot 均与 `samples` 分开。Pilot 结果、归档来源分组、raw-coverage 限制及其单独记录的核验见 [financial-filing-archive.zh-CN.md](financial-filing-archive.zh-CN.md)，不作为 samples gate。
 
-## 4. 调度与并发
+## 5. 确定性与安全输出
 
-- 一次 `download` 运行全程持有 `data/.download_progress.lock`（PID 文件锁）；**同一 data-dir 不可并行跑两轮**。organize 进程池只读 `raw/`，写各自 ticker 目录。
-- `--force`：忽略旧 progress，按选中 stage 重建工作清单（会重新下载）。`--force-rebuild`：只强制重刷 organize 产物，不影响下载进度。
-- organize 按 ticker 幂等：`_meta.json` 记录 outputs 且文件 sha256 可核验时跳过；`--force-rebuild` 或元数据损坏时重做。
-- `--stage organize` 未给 `--start/--end` 时，organize calendar 取 `1990-01-01`..今天（`manager.run_download`）。organize-only 重跑会把 `financials.csv` 延伸到今天；build-samples 只取样本窗口内的 canonical sessions，不受影响。
-- build-samples 全程流式，内存不随全市场行数增长：50 tickers/批暂存 → 40 sessions/块算截面 rank → 按年 `ParquetWriter` 追加。
-
-## 5. 确定性机制
-
-| 机制 | 位置 |
-|---|---|
-| 稳定排序（`kind="mergesort"`；market.csv 按 date、重复日期 keep last） | `build_samples`、`organize_market` |
-| JSON 一律 `sort_keys=True` + 临时文件原子替换 | 所有 manifest / splits / progress / `_meta.json` |
-| raw payload 内容寻址（文件名 = sha256） | `universe` / `financials` / `macros` |
-| 全量输出 sha256 登记（`manifest.json` 自身除外） | `build_samples._hash_output_files` |
-| canonical axis 由数据决定而非硬编码日历 | `build_samples`（≥500 common tickers 的 XNYS sessions） |
-
-## 6. 测试布局
-
-| 文件 | 覆盖 |
-|---|---|
-| `tests/test_download.py` | secrets/sources 加载、progress 原子写、market 清洗、financial as-of、CLI 帮助 |
-| `tests/test_organize_parallel.py` | 进程池与串行结果一致、跳过/重做、共享 CIK、失败隔离 |
-| `tests/test_organize_financials.py` | concept 优先级、fiscal 标识回退、三种 submissions payload 形态解析 |
-| `tests/test_build_samples.py` | 标签/特征/as-of/purge/输出 dtype 与 exclusions |
-| `tests/test_progress_lock.py` | 陈旧锁回收、活锁拒绝 |
-| `tests/test_ticker_overrides.py` | XOM CIK override 正反向查找、`--force-rebuild` |
+- 既有 SEC/FRED raw payload 使用内容寻址；manifest 将逻辑资源映射到 payload 版本。
+- 样本行序、canonical session 对齐、registry 列序和 manifest hash 是 `samples` 契约的一部分。
+- `workspace_root` 默认是 CWD，可用 `--workspace-root` 设置；默认 exclusions 路径为 `<workspace_root>/config/universes/exclusions_v1.json`。显式 exclusions 路径相对于 CWD；文件缺失时报错。不得从已安装 source package 位置推导 workspace/config/data 路径。
+- 保护 `<workspace_root>/data/` 与相关 raw/output/baselines 路径；对常规 `<data>/organized` 输入，还会独立于 `workspace_root` 保护其 data 目录旁识别出的 raw/output/baseline/archive 路径。显式 workspace root 必须存在。拒绝符号链接路径/祖先、非空目标，以及与受保护路径或实际输入重叠的目标。CLI 默认输出是 `data/samples-output`；使用全新、未占用的 `--out`，不得指向保留 bundle 或 baseline。
+- 已归档发布报告仅属历史记录，不是当前测试或性能证据。新样本构建须通过独立当前契约验证，不依赖跨代 projection oracle。

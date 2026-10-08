@@ -4,7 +4,7 @@
 
 > 适用：改 `src/download/`、`config/sources.toml`、`config/universes/*`、进度/锁、SEC 财务抽取。
 > 关联：[architecture.zh-CN.md](architecture.zh-CN.md)（数据流与模块边界）、[data-contracts.zh-CN.md](data-contracts.zh-CN.md)（字段契约）、[known-quirks.zh-CN.md](known-quirks.zh-CN.md)（数据源现实）、[testing.zh-CN.md](testing.zh-CN.md)（验证）。
-> 所有描述以实物为准：`src/download/*.py`、`src/cli/main.py`、`config/sources.toml`。
+> 下文既有 download/organize 行为以 `src/download/*.py`、`src/cli/main.py`、`config/sources.toml` 为准；当前 `samples` 契约不改变这些行为。选定的财务事件/事实输出是独立的九概念结构化抽取，不是完整申报档案，也不是 samples 输入。有界 filing archive 是另一条已实现 workflow；其范围与当前证据见 [financial-filing-archive.zh-CN.md](financial-filing-archive.zh-CN.md)。
 
 ## 1. 数据流与入口
 
@@ -17,9 +17,12 @@ CLI: quant-dataset download --stage {market|financials|macros|organize|all} [--s
                ├─ market    → raw/yahoo/<TICKER>/<start>_<end>.csv
                ├─ financials→ raw/sec/financials/<sha256>.json（companyfacts + submissions + 历史分页）
                ├─ macros    → raw/fred/<SERIES>/<sha256>.json
-               └─ organize  → organized/stocks/<TICKER>/{market.csv,financials.csv,_meta.json}
+                └─ organize  → organized/stocks/<TICKER>/{market.csv,financials.csv,
+                                  financial_events.parquet,financial_facts.parquet,_meta.json}
                               organized/shared/{macro.csv,_meta.json}
 ```
+
+上图所示财务 organizer 输出是独立文件。当前 `samples` builder 只读取 organized 行情/宏观面板及 exclusions；不读取财务文件或财务 `_meta.json` 记录。
 
 - `STAGES = ("market", "financials", "macros", "organize")`；CLI `--stage all` 展开为四者。
 - `--data-dir`（默认 `data`）通过 `manager._with_data_dir` 重映射 `raw_dir/organized_dir/progress_file/progress_tmp_file/progress_lock_file`，相对路径按 `repo_root`（即 `Path.cwd()`）解析；`repo_root` 同时决定 `config/` 位置，因此命令必须在仓库根目录运行。
@@ -36,7 +39,8 @@ CLI: quant-dataset download --stage {market|financials|macros|organize|all} [--s
 | `financials.py` | 下载 companyfacts、submissions、历史 submissions 分页；内容寻址 + manifest | `fetch_financials`、`_fetch`、`_read_manifest`、`_manifest_mapping` |
 | `macros.py` | 下载 FRED 观测序列；内容寻址 + manifest；逐系列进度 | `fetch_macros` |
 | `organize.py` | 行情清洗/派生列、宏观 session 对齐、`_meta.json` 合并写 | `organize_market`、`organize_macros`、`_market_quality`、`write_meta` |
-| `organize_financials.py` | SEC facts → session 级 as-of 财务快照（全仓库最复杂的抽取逻辑） | `organize_financials`、`_CONCEPTS`、`_submission_rows`、`_fact_for_period`、`_fiscal_identifiers` |
+| `organize_financials.py` | SEC facts → 旧 session 快照，并在快照选择前生成申报事件 artifact | `organize_financials`、`_CONCEPTS`、`_submission_rows`、`_fact_for_period`、`_fiscal_identifiers` |
+| `financial_events.py` | `financial_events_v1` 规范化申报事件与有限 fact 版本 Parquet 表 | `organize_artifact`、`write_tables`、`artifact_is_valid`、`write_empty_artifact` |
 | `progress.py` | 进度原子写 + 按 PID 的排他锁 + stale 锁回收 | `Progress`、`initialize`、`save_atomic`、`acquire_lock` |
 | `config.py` | 加载 `secrets.toml` / `sources.toml`，dataclass 化 | `load_secrets`、`load_sources`、`SourcesConfig` |
 | `errors.py` | 领域异常 | `ConfigError`、`DownloadError`、`OrganizeError` |
@@ -50,12 +54,14 @@ CLI: quant-dataset download --stage {market|financials|macros|organize|all} [--s
 | `data/raw/sec/financials/<sha256>.json` + `manifest.json` | `financials.fetch_financials` | 所有 CIK 共用一个扁平内容寻址目录；manifest `{"resources": {logical_key: [record,...]}}` |
 | `data/raw/fred/<SERIES>/<sha256>.json` + `manifest.json` | `macros.fetch_macros` | 同上，`logical_key = observations:<series>` |
 | `data/organized/stocks/<TICKER>/market.csv` | `organize_market` | 日历内 session；含 `quality_flag` 与派生列 |
-| `data/organized/stocks/<TICKER>/financials.csv` | `organize_financials` | 每个 session 一行；无输入也写全 missing 行 |
-| `data/organized/stocks/<TICKER>/_meta.json` | `organize._write_meta` / `organize_financials._write_meta` | `inputs`/`outputs` 均记 sha256，按 path 合并保留旧记录 |
+| `data/organized/stocks/<TICKER>/financials.csv` | `organize_financials` | 旧契约：每 session 最新整份申报快照一行；语义不变 |
+| `data/organized/stocks/<TICKER>/financial_events.parquet` | `financial_events.organize_artifact` | 每个有效申报事件一行，包括没有财务 facts 的申报 |
+| `data/organized/stocks/<TICKER>/financial_facts.parquet` | `financial_events.organize_artifact` | 按来源申报和实际期间/版本组织的有限 USD 概念 facts |
+| `data/organized/stocks/<TICKER>/_meta.json` | `organize._write_meta` / `financial_events.commit_artifact_meta` | 登记旧表和事件/事实产物；嵌套 `financial_events` 契约、完整性、CIK/raw-input 身份、资源状态、质量/拒绝计数、日历、hash 与行数 |
 | `data/organized/shared/macro.csv` | `organize_macros` | 宽表，session 对齐 + ffill |
 | `data/.download_progress`（+ `.tmp`、`.lock`） | `progress.py` | 逐 item 状态；锁文件内容为 PID |
 
-## 4. SEC 财务摄入三层机制
+## 4. SEC 财务摄入：旧快照与申报事件 artifact
 
 ### 4.1 下载层：`fetch_financials(cik10, cfg, secrets, raw_dir)`
 
@@ -118,7 +124,7 @@ CLI: quant-dataset download --stage {market|financials|macros|organize|all} [--s
 5. `10-Q` → 找**最近一个更早的 10-K** 作锚：fiscal_year 取该 10-K 的 fy（无则报告年），季度号 = 锚之后到本报告期末之间 distinct 10-Q `reportDate` 的排序位次（1–3）→ `(annual_year+1, Qn)`（Apple 类非日历财年因此不会被标成日历年季度）；
 6. 其余（含无法定位的 10-Q）→ `(None, None)`，宁可留空不误标。
 
-### 4.4 As-of session 对齐（`organize_financials` 主循环）
+### 4.4 旧 daily CSV 的 as-of session 对齐（`organize_financials` 主循环）
 
 - `report_rows` 按 `(available_at, accession_number)` 排序，`available_at = filingDate`；`report_filed_dates` 与之平行。
 - 对排序后的 calendar 做**双指针前缀扫描**：`while report_filed_dates[visible_count] < session: visible_count += 1`，然后取 `report_rows[visible_count-1]`。因此申报在**申报日的下一个 session** 才可见（严格 `<`）：申报日当天不使用该信息，保守对齐披露时点。
@@ -127,6 +133,25 @@ CLI: quant-dataset download --stage {market|financials|macros|organize|all} [--s
 - 修正申报：`is_amendment = form.endswith("/A")`；`quality_status` 判定 = 若存在更早的、同 `report_period_end` 的原始申报 → 有任一概念值取 `"ok"`，否则 `"missing"`；不存在原始申报 → `"amendment_only"`；非修正申报 → 有值 `"ok"` / 无值 `"missing"`。修正申报不会让更早的原始申报“复活”。
 - 输出列固定顺序：`date, available_as_of, accession_number, form, is_amendment, fiscal_year(Int64), fiscal_period, report_period_end, days_since_filing, <_CONCEPTS 键顺序>, quality_status`；日期以 `%Y-%m-%d` 写出。
 - `_write_meta` 以 path 为键合并 inputs；当本次没有任何 owned 输入时，旧的 `sec/financials/` inputs 会被剔除，避免 provenance 指向已不存在的 raw 文件（test 覆盖）。
+
+### 4.5 既有 organized event/fact 抽取（`financial_events_v1`；非完整 archive）
+
+`organize_financials` 在选择旧 daily snapshot **之前**，从选中的 raw SEC submissions 和 Company Facts 构建既有 `financial_events_v1` artifact。旧 `financials.csv` schema 与整行覆盖行为保持不变；artifact 与其共存，绝不从 CSV 逆向构造。其 facts 仅限既有九概念白名单；它不是完整 XBRL 或申报全文档案。`samples` 不读取该 artifact 或财务 metadata。
+
+| 表 | 粒度与稳定字段 |
+|---|---|
+| `financial_events.parquet` | 每个有效申报事件一行，包括无财务 facts 的非财务申报。固定字段：`event_id`、`asset_id`、`cik10`、`accession_number`、`filed_date`、`effective_visible_session`、`form`、`is_amendment`、`report_period_end`、`fiscal_year`、`fiscal_period`、`fiscal_key_source`、`quality_status`、`source_submission_path`、`source_submission_sha256`、`source_submission_locator`。 |
+| `financial_facts.parquet` | 每个来源申报、概念及实际期间/版本一条规范化候选。固定字段：`fact_version_id`、`event_id`、`concept`、float64 `value`、`unit`、`taxonomy`、`tag`、`period_kind`、`period_start`、`report_period_end`、`duration_days`、`fiscal_year`、`fiscal_period`、`fiscal_key_source`、`filed_date`、`effective_visible_session`、`fact_accession_number`、`match_method`、`source_fact_path`、`source_fact_sha256`、`source_fact_locator`。 |
+
+两表使用固定 Arrow schema，即使为空表也如此。有 accession 时 event ID 用规范化、十位补零的 CIK + accession；无 accession 时用来源 submission hash + 记录 locator 构造稳定 ID，并记录 accession 缺失诊断；其计数器 key 不属于稳定契约。Fact 必须关联唯一事件。事实 accession 精确匹配；fact 无 accession 时，只允许唯一的 `(filed_date, report_period_end, base form)` 事件匹配。匹配歧义/失败会拒绝；同一 event/tag/unit/实际期间的冲突值也拒绝，不能用下载时间排列披露版本。
+
+抽取遍历现有九概念 `_CONCEPTS` 白名单。数值转换与有限值筛选在 **tag 优先级选择之前**，因此高优先级 NaN/inf 不会遮蔽低优先级有限 fact。不推断或换算币种；仅保留 USD。artifact 保留 tag、taxonomy、unit、来源 locator 和期间元数据。`assets`、`liabilities`、`equity` 必须是 instant。期间起止可验证的流量，只有 10-Q 且时长 70–125 天才标 `quarter`，10-K 且时长 300–400 天才标 `annual`（首尾日期均计入）；YTD/其他 duration 留作 `unknown`，不能进入增长/流量比率 cohort。缺 start 的流量可作为有限 `unknown` 披露保留。Fiscal key 冲突、来源匹配歧义、非 USD、非数值/非有限值、期间区间无效、taxonomy 不支持及拒绝申报均计数。
+
+`effective_visible_session` 在 XNYS 日历上映射为严格晚于 `filed_date` 的首个 session；申报日不可见。映射失败会计数并阻止 artifact complete。输出日历范围与扩展的生效日映射日历分开记录。同一 session 生效的全部事件必须在生成该 session 特征前一起更新。原申报/amendment 保持独立事件/版本，从自己的生效 session 起更新；空 amendment 不删除旧 facts。`quality_status` 是元数据，不过滤有效有限 facts。
+
+`_meta.json.financial_events` 记录 `contract_version="financial_events_v1"`、`complete`、`status`、`empty_reason`、`cik10`、`input_hashes`、`raw_input_inventory`、`raw_input_inventory_sha256`、`input_resource_status`、`input_resource_diagnostics`、`calendar`、`output_calendar`、`quality_counts`、`rejection_counts` 与 `events`/`facts` 的 path、sha256、行数。顶层 `_meta.json` 也登记 `cik10`、`raw_input_inventory_sha256`、`row_counts.financial_events`/`financial_facts` 和两张 Parquet 的 outputs。
+
+`input_resource_status` 必须包含 `manifest`、`submissions`、`companyfacts`。`missing`、`unreadable`、`malformed`、`unknown` 等硬失败会使 artifact 不完整；确认的 no-CIK/no-input 状态会明确记录，并可生成 schema 正确的空表。事件/事实文件原子写入，完成 metadata 最后提交。完成身份绑定 CIK 与 raw SEC inventory fingerprint；raw 输入变化需重新 organize。`rejection_counts` 提供 raw resource/payload 有效性、来源/日期/accession 匹配、币种/数值/有限值检查、期间与 fiscal-key 冲突、生效 session 映射等诊断。具体计数器名称和聚合方式属于实现诊断，不是稳定契约；消费者不得依赖单个 key。
 
 ## 5. ticker→CIK override 与缓存
 
@@ -152,7 +177,7 @@ CLI: quant-dataset download --stage {market|financials|macros|organize|all} [--s
 
 ## 7. 并行 organize（`manager._organize_tickers`）
 
-- 完成判定 `_ticker_is_organized`：`_meta.json` 可解析、`ticker` 匹配、`outputs` 列表里每个 path 存在；若 `raw/yahoo/<TICKER>/*.csv` 存在则 `market.csv` 必须在 outputs 中；若该 ticker 有 CIK（`require_financials`）则 `financials.csv` 也必须在 outputs 中。任一不满足 → 重新组织。
+- 完成判定 `_ticker_is_organized`：`_meta.json` 可解析、`ticker` 匹配、所有 outputs path 存在；有 CIK 的 ticker 必须同时有旧 `financials.csv` 和有效 `financial_events_v1` artifact。`artifact_is_valid` 校验 `complete`、契约版本、预期 CIK、raw-input inventory fingerprint、fail-closed 资源状态、两张 Parquet 的 hash/行数/schema，以及 event/fact 关系。旧 meta 或仅有 CSV 都不能跳过新 artifact 重建。
 - worker（`_organize_ticker_worker`）先 `unlink` 旧 `_meta.json`（防中间态被误判完成），再依次 `organize_market`（无 Yahoo CSV 时仅 log、返回 None）与 `organize_financials`（有 CIK 时）；两个操作的异常分别收集，互不阻塞其他 ticker。
 - `ProcessPoolExecutor(max_workers=workers, initializer=_initialize_organize_worker, initargs=(session_calendar,))`：session 日历只在每个进程初始化时复制一次；worker 内不再构建 `exchange_calendars`。
 - 返回并记录 `(succeeded, skipped, failed)`；`failed>0` 不中断其他 ticker，run 最终 exit code 为 1。
@@ -177,20 +202,21 @@ CLI: quant-dataset download --stage {market|financials|macros|organize|all} [--s
 
 | 想改什么 | 动哪里 | 必须同步 |
 |---|---|---|
-| 新增财务概念 | `organize_financials._CONCEPTS`（输出列 → 有序 tag 元组） | `tests/test_organize_financials.py::test_financial_concept_priority_whitelist_includes_old_and_new_us_gaap_tags` + 一个 fixture fact；若样本层要 YoY 特征，另改 `build_samples._FINANCIAL_VALUES`（见 [samples.zh-CN.md](samples.zh-CN.md)） |
+| 在独立 organized 抽取中新增财务概念 | `organize_financials._CONCEPTS`（输出列 → 有序 tag 元组） | `tests/test_organize_financials.py::test_financial_concept_priority_whitelist_includes_old_and_new_us_gaap_tags` + 一个 fixture fact。`samples` 不消费财务数据；新增财务样本特征须另行决定契约，不是本 organizer 改动的一部分。 |
 | 新增数据源 stage | `manager.STAGES` + `run_download` 内新 block + `progress_stages`；CLI `--stage` choices | 新 stage 的失败计数与进度状态；[../user/cli.zh-CN.md](../user/cli.zh-CN.md)（不变式 8） |
 | 新增 provider 配置 | `config.py` 的 dataclass + `load_sources` 字段 + `config/sources.toml` | `tests/test_download.py` 的 config 测试 |
 | 新增 ticker→CIK 纠正 | `config/universes/ticker_cik_overrides.json` 的 `overrides` | `tests/test_ticker_overrides.py`；重下 financials + `--force-rebuild --stage organize` |
 | 排除 ticker | `config/universes/exclusions_v1.json`（`asset_id` 去重、必须大写） | 样本层 `_load_exclusions` 会校验重复；重建 samples 后比对 manifest `exclusions_applied` |
 
-## 10. 已知限制（实测）
+## 10. 既有 organizer 限制（不是 samples 覆盖或发布指标）
 
-- **银行营收不在白名单**：白名单没有利息/手续费口径（如 `InterestAndDividendIncomeOperating`）。JPM 全历史 `financials.csv` 只有 **4 个 session** 的 `revenue` 非空（2010–2011 年的旧 `Revenues` fact），样本层 `f_raw_revenue_yoy` 仅 **1 行**非空；`operating_income` 全空。
-- **XOM 无 `OperatingIncomeLoss`**：XOM 用税前利润披露（`IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest` 等），因此 `operating_income` 全历史为空；`revenue` 首个非空报告期为 FY2011（见 [known-quirks.zh-CN.md](known-quirks.zh-CN.md)）。
-- **无 companyfacts 的 ticker**：183 只有 financials 目录的 ticker 在 SEC 返回 404（主体为基金/ETF/信托/外国发行人/结构化产品），仍会写出全 missing 的 `financials.csv`（`quality_status=missing`），不会中断 organize。
-- **Yahoo 无行情**：1,128 只 ticker 无 `market.csv`（SPAC 单位/权证/空壳）；它们不进 samples（样本只遍历有 market.csv 的 ticker）。
-- **JPM 类超大申报史**：JPM submissions 解析出 167,492 条申报（77% 为 424B2 招股书）。这正是必须用 `(filed,end)` 索引 + 双指针、不能逐 fact 线性扫描的原因；`_meta.json.row_counts.financials_input` 会记录该数量。
-- **BAMLH0A0HYM2 覆盖断崖**：当前 raw 响应只有 794 条观测（2023-09-25 起），organize 后 732 个非空 session；宏观缺失率高与此有关，重跑 macros 后先核对 raw 文件与 manifest。
+- **银行概念仍不在选定白名单内**：`InterestAndDividendIncomeOperating` 等银行利息/手续费概念不属于现有九概念抽取。event/fact artifact 不会生成 `_CONCEPTS` 之外的 facts。由于财务不是样本输入，当前没有 samples 银行覆盖率实测。
+- **选定白名单存在发行人/概念缺口**：例如 XOM 的选定来源不含 `OperatingIncomeLoss`；后续申报中的 comparative facts 不会反向归入旧 event 行。这是既有 organizer 限制，不是 samples 字段或覆盖率声明；见 [known-quirks.zh-CN.md](known-quirks.zh-CN.md)。
+- **SEC 资源缺失或确认空输入**：既有 organizer 会区分确认无输入与资源缺失/损坏、映射不完整。这些状态只适用于独立 organized 财务 artifact；samples builder 不检查它们。
+- **Yahoo 无行情**：没有 `market.csv` 的 ticker 无法生成行情样本行。本文不声明当前样本 ticker 数量实测。
+- **申报历史较大**：event 体量因发行人而异。数量和 organize 资源用量应从明确标识的运行中实测；本文不声明当前样本财务输入或运行时测量。
+- **宏观序列覆盖**：FRED 历史长度各异。诊断摄入问题前，核对对应 raw resource status 与 manifest；本文不声明当前样本缺失率实测。
+- **输入历史边界**：既有 SEC cache 不是完整历史 vintage 档案，且没有归档 filing HTML/iXBRL 集合；raw facts 缺失、仅存在于后续 comparative period 的事实、非 USD 事实、来源匹配歧义和白名单外概念仍不可用。
 
 ## 11. 验证方法
 
@@ -202,10 +228,13 @@ PYTHONPATH=src .venv/bin/python -m pytest tests/test_download.py tests/test_orga
 # 2) 只规划、不落盘
 PYTHONPATH=src .venv/bin/python -m cli.main download --stage all --start 1990-01-01 --end 2025-12-31 --dry-run
 
-# 3) 单 ticker smoke：不下载，只重建 AAPL/XOM 的 organized 产物
-PYTHONPATH=src .venv/bin/python -m cli.main download --stage organize --force-rebuild --tickers AAPL,XOM
-# 判定：AAPL financials.csv 的 revenue 首个 report_period_end 应回到 2009-06-27 附近；
-#       XOM revenue 首个可见行应为 FY2011（2012-02-27 起），operating_income 为空属预期。
+# 3) 既有 organizer smoke（仅在 organizer 任务指定时；不是样本构建步骤）
+# 复用 raw cache；不抓取 market/financials/macros。
+PYTHONPATH=src .venv/bin/python -m cli.main download --stage organize --force-rebuild \
+  --tickers AMZN,JPM,AAPL,XOM --start 1990-01-01 --end 2025-12-31
+# 检查既有 financial_events_v1 metadata/hash 与 event/fact provenance。
+# AMZN filed_date 2025-08-01 在 08-01 不可见；旧 organizer 按下一 session 可见。
+# financials.csv 保持每日整份快照语义；两类 organizer 输出均非 samples 输入。
 
 # 4) 任选 ticker 核对 provenance / 内容寻址
 python -c "import json;m=json.load(open('data/organized/stocks/AAPL/_meta.json'));print([i['path'] for i in m['inputs']])"

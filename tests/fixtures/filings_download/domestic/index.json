@@ -1,0 +1,17 @@
+{
+  "directory": {
+    "name": "/Archives/edgar/data/320193/000032019324000069/",
+    "item": [
+      {"name": "aapl-20240928.htm", "type": "text", "size": "987654"},
+      {"name": "aapl-20240928.xsd", "type": "text", "size": "44500"},
+      {"name": "aapl-20240928_ins.xml", "type": "text", "size": "880000"},
+      {"name": "aapl-20240928_cal.xml", "type": "text", "size": "122000"},
+      {"name": "aapl-20240928_def.xml", "type": "text", "size": "99000"},
+      {"name": "aapl-20240928_lab.xml", "type": "text", "size": "1400000"},
+      {"name": "aapl-20240928_pre.xml", "type": "text", "size": "300000"},
+      {"name": "logo.jpg", "type": "image", "size": "5540"},
+      {"name": "full-submission.txt", "type": "text", "size": "6500000"},
+      {"name": "press-release.pdf", "type": "application/pdf", "size": "12800"}
+    ]
+  }
+}

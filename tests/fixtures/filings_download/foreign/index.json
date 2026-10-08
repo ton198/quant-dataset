@@ -1,0 +1,10 @@
+{
+  "directory": {
+    "name": "/Archives/edgar/data/1067983/000095017024012345/",
+    "item": [
+      {"name": "nvo-20231231.htm", "type": "text", "size": "400000"},
+      {"name": "annual-report-2023.pdf", "type": "application/pdf", "size": "900000"},
+      {"name": "logo.svg", "type": "image", "size": "3000"}
+    ]
+  }
+}

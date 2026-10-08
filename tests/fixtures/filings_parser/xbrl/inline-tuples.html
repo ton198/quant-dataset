@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml"
+      xmlns:ix="http://www.xbrl.org/2013/inlineXBRL"
+      xmlns:xbrli="http://www.xbrl.org/2003/instance"
+      xmlns:link="http://www.xbrl.org/2003/linkbase"
+      xmlns:xlink="http://www.w3.org/1999/xlink"
+      xmlns:ex="https://example.test/filings">
+  <head><title>Inline tuple relationships</title></head>
+  <body>
+    <div style="display:none">
+      <ix:header>
+        <ix:references><link:schemaRef xlink:type="simple" xlink:href="taxonomy.xsd"/></ix:references>
+        <ix:resources>
+          <xbrli:context id="D1">
+            <xbrli:entity><xbrli:identifier scheme="https://example.test/entity">0000123456</xbrli:identifier></xbrli:entity>
+            <xbrli:period><xbrli:startDate>2024-01-01</xbrli:startDate><xbrli:endDate>2024-12-31</xbrli:endDate></xbrli:period>
+          </xbrli:context>
+        </ix:resources>
+      </ix:header>
+    </div>
+    <div class="outer-wrapper">
+      <ix:tuple name="ex:Record" tupleID="outer">
+        <span class="nested-wrapper">
+          <ix:tuple name="ex:NestedRecord" tupleID="inner" order="1">
+            <span><ix:nonNumeric name="ex:TextFact" contextRef="D1" order="1">Nested inline tuple child</ix:nonNumeric></span>
+          </ix:tuple>
+        </span>
+      </ix:tuple>
+    </div>
+    <div class="different-dom-wrapper">
+      <div><ix:nonNumeric name="ex:TextFact" contextRef="D1" tupleRef="outer" order="2">Out-of-DOM tupleRef child</ix:nonNumeric></div>
+    </div>
+  </body>
+</html>

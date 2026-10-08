@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"
+            xmlns:link="http://www.xbrl.org/2003/linkbase"
+            xmlns:xlink="http://www.w3.org/1999/xlink"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xmlns:ex="https://example.test/filings"
+            xmlns:iso4217="http://www.xbrl.org/2003/iso4217"
+            xmlns:xbrldi="http://xbrl.org/2006/xbrldi"
+            xsi:schemaLocation="https://example.test/filings taxonomy.xsd">
+  <link:schemaRef xlink:type="simple" xlink:href="taxonomy.xsd"/>
+  <xbrli:context id="FY2023">
+    <xbrli:entity>
+      <xbrli:identifier scheme="https://example.test/entity">0000123456</xbrli:identifier>
+      <xbrli:segment>
+        <xbrldi:explicitMember dimension="ex:RegionAxis">ex:NorthMember</xbrldi:explicitMember>
+        <xbrldi:typedMember dimension="ex:ProductAxis"><ex:ProductDomain>Widget</ex:ProductDomain></xbrldi:typedMember>
+        <ex:SegmentNote>segment metadata</ex:SegmentNote>
+      </xbrli:segment>
+    </xbrli:entity>
+    <xbrli:period>
+      <xbrli:startDate>2023-01-01</xbrli:startDate>
+      <xbrli:endDate>2023-12-31</xbrli:endDate>
+    </xbrli:period>
+    <xbrli:scenario><ex:ScenarioNote>scenario metadata</ex:ScenarioNote></xbrli:scenario>
+  </xbrli:context>
+  <xbrli:context id="Instant2024">
+    <xbrli:entity><xbrli:identifier scheme="https://example.test/entity">0000123456</xbrli:identifier></xbrli:entity>
+    <xbrli:period><xbrli:instant>2024-01-01</xbrli:instant></xbrli:period>
+  </xbrli:context>
+  <xbrli:unit id="USD"><xbrli:measure>iso4217:USD</xbrli:measure></xbrli:unit>
+  <xbrli:unit id="USDPerShare">
+    <xbrli:divide>
+      <xbrli:unitNumerator><xbrli:measure>iso4217:USD</xbrli:measure></xbrli:unitNumerator>
+      <xbrli:unitDenominator><xbrli:measure>xbrli:shares</xbrli:measure></xbrli:unitDenominator>
+    </xbrli:divide>
+  </xbrli:unit>
+  <ex:Record>
+    <ex:TextFact contextRef="FY2023">Tuple child</ex:TextFact>
+    <ex:Record>
+      <ex:TextFact contextRef="FY2023">Nested tuple child</ex:TextFact>
+    </ex:Record>
+  </ex:Record>
+  <ex:Amount contextRef="FY2023" unitRef="USD" decimals="2">100.00</ex:Amount>
+  <ex:Amount contextRef="FY2023" unitRef="USD" decimals="2">100.00</ex:Amount>
+  <ex:NilAmount contextRef="Instant2024" unitRef="USD" xsi:nil="true"/>
+  <ex:Rate contextRef="Instant2024" unitRef="USDPerShare">
+    <xbrli:numerator>1</xbrli:numerator><xbrli:denominator>3</xbrli:denominator>
+  </ex:Rate>
+  <ex:DisclosureText contextRef="FY2023">Disclosure text content with readable source text.</ex:DisclosureText>
+  <ex:DefaultAmount contextRef="Instant2024" unitRef="USD" decimals="INF"></ex:DefaultAmount>
+  <ex:TextFact contextRef="FY2023">   </ex:TextFact>
+</xbrli:xbrl>

@@ -2,7 +2,7 @@
 
 # Data Contracts
 
-This document is the schema and semantic contract for every data layer (`data/raw/` → `data/organized/` → `data/output/`) and the basis for verifying a rebuild. All figures match the current repository artifacts (generated 2026-09-29); after a rebuild, the freshly generated `manifest.json` / `qc_report.*` / `splits.json` are authoritative.
+This document records the data-layer contracts (`data/raw/` → `data/organized/` → sample outputs). The maintained sample contract in §3 is the single finance-free `samples` schema. Existing sample bundles are preserved unchanged as historical artifacts: the 2026-10-03 publication at `data/output/` retains its original manifest value `schema_version="samples_v3"`, and the former 147-column output remains at `data/output-v1-backup-20261003T172214933236Z`; the frozen baseline is separate. These records describe existing data only and do not announce a new publication or current validation. The obsolete unimplemented financial-feature proposal is not part of this contract.
 
 For the consumer-side guide see [../user/data-format.md](../user/data-format.md); for sample-build implementation details see [samples.md](samples.md); for download and organize implementation details see [download.md](download.md).
 
@@ -11,8 +11,8 @@ For the consumer-side guide see [../user/data-format.md](../user/data-format.md)
 | Layer | Path | Contract strength | Change impact |
 |---|---|---|---|
 | raw | `data/raw/` | Payloads are content-addressed and append-only; `manifest.json` records key → versions | Appends do not affect downstream; but organized data does not automatically follow |
-| organized | `data/organized/` | The contract in this section; each output records input/output sha256 in `_meta.json` | Changing columns/semantics → must rebuild `data/output/` |
-| output | `data/output/` | `samples_v1`; `manifest.json.outputs` records sha256/bytes/rows for every output | Contract changes must bump `schema_version` and update this document |
+| organized | `data/organized/` | The contract in this section; each output records input/output sha256 in `_meta.json` | Sample candidates consume market/macro panels; keep existing bundles and baselines untouched |
+| output | Preserved historical `data/output/`; CLI's fresh-candidate default is `data/samples-output` | New builds use the single `samples` contract; manifests record output hashes/bytes/rows | Never target preserved bundles, backups, or baselines; choose a fresh unused path |
 
 ## 1. data/raw/
 
@@ -23,7 +23,7 @@ data/raw/yahoo/<TICKER>/<start>_<end>.csv        # start/end are download --star
 ```
 
 - Columns (written by yfinance as-is, `auto_adjust=false, actions=true`): `date`(index), `Adj Close`, `Close`, `Dividends`, `High`, `Low`, `Open`, `Stock Splits`, `Volume`.
-- **Not content-addressed**: re-downloading the same ticker over the same range overwrites the same-name file; failed/empty downloads write nothing — so "no directory" means the ticker has no market data (currently 1,128 such tickers, see §4).
+- **Not content-addressed**: re-downloading the same ticker over the same range overwrites the same-name file; failed/empty downloads write nothing — so "no directory" indicates no market data for that ticker. No current sample ticker count is claimed here.
 - The range in the filename is the CLI value, not the range the data actually covers; trimming to sessions happens later, in organize.
 
 ### 1.2 SEC universe snapshot
@@ -91,7 +91,7 @@ data/raw/fred/manifest.json                      # entry structure same as 1.3
 | `intraday_range` | float64 | `(high - low) / close` |
 | `quality_flag` | string | `ok` / `invalid_ohlc` / `negative_price`, decided row by row from OHLC+volume validity |
 
-- Row counts vary with IPO/delisting/data gaps (currently 6,534 files and 3,377 distinct row counts); in the full baseline the largest single file has 9,067 rows (= the number of sample canonical sessions), and a rerun with a later organize end date can be longer.
+- Row counts vary with IPO/delisting/data gaps; do not infer current universe size from an old sample bundle. A later organize end date can extend a file.
 - Duplicate dates keep the last row; non-session rows are dropped during organize (counted in `_meta.row_counts.market_dropped_non_session`).
 
 ### 2.2 stocks/<TICKER>/financials.csv
@@ -130,7 +130,20 @@ Fact selection and fiscal identifiers:
 
 - Only facts from the same filing (`filed` + `end` + optional `fy`/`fp`/`form`/`accn`) are matched; 10-Q prefers single-quarter spans of 70–125 days, 10-K prefers annual spans of 300–400 days (instant facts match on `end`); ties go to the duration closest to 91/365 days.
 - `fiscal_year`/`fiscal_period` are taken in order from: the selected fact's `fy`/`fp` → submissions metadata → the filing's own `fy`/`fp` → for 10-K, report year + `FY` → for 10-Q, quarters counted from the previous 10-K (Q1..Q3) → otherwise null.
-- Row count = the length of the session calendar at organize time; current artifacts are mixed (9,067 rows × 1,118 files; 9,252 rows × 6,539; a few at 9,250). build-samples only consumes snapshots with `available_as_of ≤ signal date`, regardless of file row count.
+- Row count is the session-calendar length at organize time. This file retains its legacy daily **whole-snapshot replacement** semantics: `available_as_of` stores `filed_date`, non-financial filings can replace all concept values in the row, and values are not carried forward per concept. The `samples` builder does not read this CSV or use it as an input.
+
+### 2.2.1 Existing organized financial event/fact extract (separate from samples)
+
+The two Parquet tables and their `_meta.json` registration form the existing `financial_events_v1` artifact. They are generated from SEC submissions and Company Facts before the legacy daily snapshot is selected; they coexist with, and do not replace or redefine, `financials.csv`. This selected nine-concept structured extract is not a complete XBRL archive or a full filing-text archive. The `samples` builder does not read these files or their financial metadata.
+
+| Artifact | Grain and key fields |
+|---|---|
+| `financial_events.parquet` | One valid filing event per row, including events with no financial facts. Fields include stable `event_id`, `asset_id`, zero-padded `cik10`, `accession_number`, `filed_date`, `effective_visible_session`, `form`, `is_amendment`, report/fiscal period metadata and key source, `quality_status`, submission path/hash/locator. |
+| `financial_facts.parquet` | One normalized concept/actual-period/version per row. Fields include `fact_version_id`, `event_id`, `concept`, finite float64 `value`, `unit`, `taxonomy`, `tag`, `period_kind`, `period_start`, `report_period_end`, `duration_days`, resolved fiscal key/source, filing/effective dates, fact accession, `match_method`, and fact path/hash/locator. |
+
+Both tables use fixed Arrow schemas, including when empty. Event IDs use CIK + accession when present; accession-less IDs use source hash + record locator and are counted. Facts must point to events. Candidates are finite-screened before tag priority; this artifact's financial consumption accepts USD. Flow periods are `quarter` only for verified 10-Q duration 70–125 days, `annual` only for verified 10-K duration 300–400 days; YTD/other spans are not single quarters. Missing starts can remain `unknown` disclosures but cannot qualify for growth or flow-ratio formulas. Stock concepts are `instant`. Unmatched/ambiguous sources, conflicts, invalid dates, unsupported units, non-finite values and invalid ranges are rejected and counted, never silently assigned a disclosure order based on download time.
+
+`effective_visible_session` is the first XNYS session strictly after `filed_date`. Raw source completion identity includes both CIK and `raw_input_inventory_sha256`; `_meta.json.financial_events.complete` is fail-closed and requires valid resource states, calendar mapping, files, schema, output hashes, and event/fact relationships. A confirmed no-input case uses schema-correct empty tables with a reason; missing, malformed or incomplete input is not a valid empty artifact. For example, no usable resource records for a CIK are represented by `empty_reason="no_usable_input_for_cik"` and `submissions/companyfacts=no_input`. A valid Company Facts placeholder/empty-facts payload may instead be recorded as nonfatal `companyfacts=no_usable_facts`: submissions still provide filing events, while the fact table may be empty. The `input_resource_status` object records `manifest`, `submissions`, and `companyfacts`. `rejection_counts` provides diagnostics for raw manifest/payload validity, filing dates and CIK identity, source/accession matching, taxonomy/unit/numeric/finite checks, period validity, fact/fiscal-key conflicts, and effective-session mapping. The counter-key names and aggregation details are implementation diagnostics, not a stable contract; consumers must not depend on individual keys.
 
 ### 2.3 shared/macro.csv
 
@@ -151,197 +164,58 @@ Fact selection and fiscal identifiers:
 | `cleaning_rules_version` | Currently `"v1"` |
 | `inputs` | `[{path, sha256}]`, the raw files actually consumed |
 | `outputs` | `[{path, sha256, rows}]`, the organized outputs |
-| `row_counts` | `market_input`/`market_output`/`market_dropped_non_session`, or `financials_input` (filing count)/`financials_output` (session rows)/`macro_output` |
+| `row_counts` | `market_input`/`market_output`/`market_dropped_non_session`, legacy `financials_input`/`financials_output`, `financial_events`, `financial_facts`, or `macro_output` |
+| `financial_events` | Nested artifact record: `contract_version`, `complete`, `status`, `empty_reason`, `cik10`, `input_hashes`, `raw_input_inventory`, `raw_input_inventory_sha256`, `input_resource_status`, `input_resource_diagnostics`, `calendar`, `output_calendar`, `quality_counts`, `rejection_counts`, and `events`/`facts` path/hash/rows |
+| `cik10` / `raw_input_inventory_sha256` | Top-level completion identity mirrored from the filing-event record; it binds completion to both issuer and raw SEC input inventory |
 | `known_issues` | Manual/programmatic notes on semantics |
 
-- `manager._ticker_is_organized` uses this file plus file existence/hash checks to decide whether to skip.
+- `_ticker_is_organized` requires the current `financial_events_v1` contract, `complete=true`, matching CIK and raw-input fingerprint, valid status fields, schema-correct event/fact tables, and matching output hash/row registrations before skipping. Legacy CSV presence alone is not a completion signal.
 
-## 3. data/output/ (sample bundle, schema_version = samples_v1)
+## 3. Single active sample contract (`samples`)
 
-### 3.1 File inventory
+The maintained contract for new sample builds is finance-free `samples`. The existing 2026-10-03 `data/output/` bundle is an unchanged historical artifact whose manifest still says `schema_version="samples_v3"`; this section does not relabel or republish it. The former 147-column output and frozen baseline remain separately preserved. `financial_status=not_applicable`, when present in a legacy artifact, is not a financial-coverage pass.
 
-| File | Size (current artifacts) | Notes |
+### 3.1 Inputs and financial separation
+
+The builder reads organized `stocks/<TICKER>/market.csv`, `shared/macro.csv`, and the configured exclusions. It does not read `financials.csv`, `financial_events.parquet`, `financial_facts.parquet`, or financial `_meta.json` records. It performs no financial preflight, financial coverage analysis, or financial input inventory. Financial status is `not_applicable`. Existing SEC organized files remain untouched and available separately.
+
+### 3.2 Closed schema and canonical order
+
+| Group | Count | Contents |
+|---|---:|---|
+| Keys / flags | 4 | `date`, `asset_id`, `is_common`, `flag_extreme_label` |
+| Raw | 43 | 10 stock-level market/derived features + 33 macro features |
+| Cross-sectional | 10 | Same-date transform of the 10 stock-level raw features; no macro CS |
+| Missing indicators | 43 | One `miss_*` for each raw column |
+| `manifest.feature_list` | **96** | 43 raw + 10 CS + 43 MISS |
+| Labels | 32 | 30 forward return labels + `excess_5d` and `excess_21d` |
+| Physical sample columns | **132** | 4 keys/flags + 96 features + 32 labels |
+
+Column order: four keys/flags → 43 raw → 10 CS → 43 MISS → 32 labels. Physical Arrow dtypes are `date32`, `large_string` for `asset_id`, bool for `is_common`, uint8 for flags/MISS, and float32 for numeric features/labels. All 51 prior financial columns are removed: 17 finance raw + 17 finance CS + 17 finance MISS. The active schema contains no filing-age, financial-age, level, growth, ratio, or QoQ fields.
+
+The 10 stock raw columns are the existing six market passthroughs (`return_1d/5d/20d`, `volatility_20`, `volume_ratio_20`, `intraday_range`) and four derived values (`momentum_60/120`, `volatility_60`, `volume_zscore_60`). The 33 macro columns remain 11 series × level / canonical-position `_d1` / `_d5`.
+
+### 3.3 Preserved behavior and metadata
+
+The current behavioral contract defines `(date, asset_id)` keys, flags, 32 label values and null masks, splits/purge, extreme-label behavior, ticker-failure semantics, and the non-financial raw/CS/MISS values. Validate formulas and edge cases with independent fixtures and explicit invariants; a historical cross-generation projection is not the correctness oracle. The canonical calendar, macro alignment, cross-sectional ranking and label formulas are specified below.
+
+`meta.parquet.missing_frac` is computed after purge over exactly the 43 raw non-financial features: `null raw cells / (retained_rows × 43)`. It excludes CS/MISS, labels, keys/flags, and financial data.
+
+Each new manifest declares the single contract as `schema_version="samples"`, with the exact ordered 96-column `feature_list`, `semantic_contract`, schema/semantic fingerprints, consumed market/macro/exclusion inputs, `label_semantics`, and build parameters. It does not list or inspect financial artifacts. QC records row, label, raw/CS/MISS, cross-section, purge, extreme-label, and ticker-failure summaries; there is no financial feature coverage section. `input_provenance.files` records the paths, streamed SHA-256 values, and byte counts of every consumed input; these are rechecked before manifest publication. `code_identity` records hashes/bytes for all five samples package files and versions for NumPy, pandas, and PyArrow. `input_inventory` is counts-only, not a content inventory. Every registered output records SHA-256, bytes, and rows.
+
+### 3.4 Safe candidate and release verification
+
+The CLI defaults to `--out data/samples-output`. `workspace_root` defaults to the current working directory and may be specified with `--workspace-root` (an existing directory); it is never inferred from the installed source package. The default exclusions file is `<workspace_root>/config/universes/exclusions_v1.json`; an explicit `--exclusions-file` path is relative to CWD. Missing exclusions are an error, not an empty list. Protect `<workspace_root>/data/` and related raw/output/baselines paths; when organized inputs follow `<data>/organized`, protect recognized raw/output/baseline/archive siblings beside `<data>` independently of `workspace_root`. Reject symlink paths/ancestors, non-empty destinations, and destinations overlapping protected paths or actual inputs. Use a fresh unused candidate path, never the preserved output or a baseline. Verify each candidate using independent current-contract fixtures and invariants: exact columns/order/dtypes, absence of financial inputs/columns, label and split/purge edge cases, the 43-raw `missing_frac` denominator, safe output paths, actual input provenance, and output hashes.
+
+The archived 2026-10-03 report records facts about that publication only. Its reused test result and historical projection are not current source validation or a correctness oracle. Do not infer performance, financial correctness, or a release pass for a new candidate; it needs its own recorded verification.
+
+
+## 4. Existing archived sample artifacts (read-only)
+
+| Path | Recorded artifact fact | Handling |
 |---|---|---|
-| `samples/year=YYYY/part-00000.parquet` | 36 files, 23,938,669 rows | Hive-partitioned by signal-session year, snappy |
-| `meta.parquet` | 6,532 rows | Per-ticker summary (see §3.4) |
-| `manifest.json` | — | Contract, parameters, biases, sha256 of all outputs |
-| `splits.json` | — | Four-window boundaries, purge semantics and row counts (see §3.5) |
-| `qc_report.json` / `qc_report.md` | — | QC (see §3.7) |
+| `data/output/` | The 2026-10-03 publication retained `schema_version="samples_v3"`, 23,938,669 rows, 6,532 tickers, 132 physical columns, and 96 features. | Preserve its files and manifest unchanged; this record does not announce a new publication. |
+| `data/output-v1-backup-20261003T172214933236Z/` | Former 147-column sample output. | Preserve as historical data; not a version-selectable product or compatibility target. |
+| `data/baselines/samples_v1_financial_upgrade/` | Frozen historical baseline. | Preserve unchanged as a read-only archived reference. |
 
-### 3.2 samples column contract (147 columns)
-
-Column order is fixed: 4 keys/flags + 48 `f_raw` + 15 `f_cs` + 48 `miss` + 30 `target_return_*` + 2 `excess_*`. Parquet dtypes: `date`=date32, `asset_id`=large_string, `is_common`=bool, `flag_extreme_label` and all `miss_*`=uint8, all other numerics=float32.
-
-**Keys and flags (4)**
-
-| Column | dtype | Semantics |
-|---|---|---|
-| `date` | date32 | Signal session (canonical calendar) |
-| `asset_id` | large_string | Ticker (uppercase) |
-| `is_common` | bool | Heuristic flag for non-unit/warrant/preferred/right tickers (suffix rule); false rows are retained |
-| `flag_extreme_label` | uint8 | See §3.3 |
-
-**f_raw: stock-level (15)**, `float32`
-
-| Column | Semantics |
-|---|---|
-| `f_raw_return_1d` / `_5d` / `_20d` | Taken directly from the same-name market.csv columns (raw close returns) |
-| `f_raw_volatility_20` | market.csv `volatility_20` |
-| `f_raw_volume_ratio_20` | market.csv `volume_ratio_20` |
-| `f_raw_intraday_range` | market.csv `intraday_range` |
-| `f_raw_momentum_60` / `_120` | `adj_close[t]/adj_close[t-n] - 1` on the canonical axis, requiring both endpoints positive and finite |
-| `f_raw_volatility_60` | 60-period rolling standard deviation (ddof=1) of adjusted-close daily returns on the canonical axis |
-| `f_raw_volume_zscore_60` | `(volume - mean60) / std60` (ddof=1; null when std≤0 or fewer than 60 periods) |
-| `f_raw_revenue_yoy` / `f_raw_net_income_yoy` / `f_raw_operating_income_yoy` / `f_raw_assets_yoy` | Year-over-year on the as-of snapshot: `current/prior - 1`; prior prefers the same `(fiscal_year-1, fiscal_period)`, otherwise the nearest period end within ±15 days of report_period_end − 1 year; null when prior is missing or 0 |
-| `f_raw_days_since_filing` | `signal date - available_as_of` (days) |
-
-**f_raw: macro (33)**, `float32`, aligned position-by-position on the canonical axis:
-
-| Series (11) | Derived columns |
-|---|---|
-| `BAMLH0A0HYM2`, `CPIAUCSL`, `CPILFESL`, `DCOILWTICO`, `DEXUSEU`, `DGS10`, `DGS2`, `FEDFUNDS`, `PAYEMS`, `UNRATE`, `VIXCLS` | 3 columns each: `f_raw_m_<S>` (level), `f_raw_m_<S>_d1`, `f_raw_m_<S>_d5` (1/5-position differences on the canonical axis, no look-ahead) |
-
-**f_cs: cross-sectional standardization (15)**, `float32`, one per the 15 stock-level `f_raw` columns:
-
-| Column | Semantics |
-|---|---|
-| `f_cs_return_1d` … `f_cs_days_since_filing` | On each date's cross-section, average rank over non-null raw values → `p = (rank - 0.5) / n` → inverse normal `Φ⁻¹(p)` (Acklam approximation); null when raw is null |
-
-- Cross-section scope: all stocks included that day (including `is_common=false` rows); macro columns do not participate (constant within a date).
-- The method string of record is `manifest.json.feature_contract.cross_sectional_method`.
-
-**miss: missing indicators (48)**, `uint8` (1 = missing):
-
-- One for each of the 48 `f_raw` columns; name = `miss_` + raw name with the `f_raw_` prefix removed (e.g. `f_raw_return_1d` → `miss_return_1d`, `f_raw_m_DGS10_d1` → `miss_m_DGS10_d1`).
-- Rule: non-finite values (±inf/NaN) are converted to missing during feature generation, then flagged via `isna()` (see [AGENT.md](../../AGENT.md) invariant 7).
-
-**Labels (32)**, `float32`:
-
-| Column | Semantics |
-|---|---|
-| `target_return_{1..30}d` | `adj_open(t+1+h) / adj_open(t+1) - 1`; `adj_open = open × adj_close / close`; h is the positional offset on the canonical axis |
-| `excess_5d` / `excess_21d` | `target_return_hd - same-date equal-weight mean`; the mean counts only rows with `is_common=true` and `flag_extreme_label=0` (no SPY benchmark) |
-
-- A label requires both the entry and exit bars to exist with positive finite `open/close/adj_close/adj_open`; intermediate bars are not required, and no filling is done.
-- Labels are naturally null at the dataset tail (entry/exit out of range) and across trading-halt gaps.
-
-### 3.3 flag_extreme_label
-
-- `1` = any 1..30-day label window (t+1 through t+1+h) crosses a source price jump: the ratio of `adj_open` between adjacent sessions falls outside `[0.5, 2.0]` (e.g. an unadjusted reverse split).
-- Rows are retained; they are excluded from the `excess_*` benchmark mean; the training side should drop or down-weight them. Current count 120,510 (`manifest.json.data_quality_flags`).
-
-### 3.4 meta.parquet
-
-| Column | dtype | Semantics |
-|---|---|---|
-| `asset_id` | large_string | Ticker |
-| `is_common` | bool | Same as samples |
-| `first_date` / `last_date` | date32 | This ticker's first/last signal session in the sample |
-| `n_rows` | int64 | Rows retained after purge |
-| `missing_frac` | double | Raw-feature missing fraction for this ticker |
-
-- 6,532 rows = 6,534 (tickers with a market.csv) − 2 (AYA, FUND, excluded by `exclusions_v1.json`).
-
-### 3.5 splits.json
-
-| Field | Semantics |
-|---|---|
-| `fit` / `select` / `screen` / `reserve` | Closed interval `[start, end]` (signal-session dates) |
-| `purge_sessions` | `30` (maximum label horizon) |
-| `purge_semantics` | Full purge rule text (below) |
-| `purged_windows` | `{select, screen, reserve}` → boundary-window details (table below) |
-| `rows_by_split` | `{split: {before_purge, purged, retained}}` |
-| `rows_removed_by_split` | `{split: purged}`, redundant but convenient for verification |
-
-Current baseline:
-
-| split | Window | before_purge | purged | retained |
-|---|---|---|---:|---:|---:|
-| fit | 1990-01-02 – 2018-12-31 | 15,374,917 | 120,987 | 15,253,930 |
-| select | 2019-01-01 – 2020-12-31 | 2,105,325 | 139,158 | 1,966,167 |
-| screen | 2021-01-01 – 2024-12-31 | 5,351,300 | 182,398 | 5,168,902 |
-| reserve | 2025-01-01 – 2025-12-31 | 1,549,670 | 0 | 1,549,670 |
-
-| `purged_windows` key | Purged split | boundary_date | Window | sessions | rows_removed |
-|---|---|---|---|---|---:|---:|
-| `select` | fit | 2019-01-02 | 2018-11-14 – 2018-12-31 | 31 | 120,987 |
-| `screen` | select | 2021-01-04 | 2020-11-17 – 2020-12-31 | 31 | 139,158 |
-| `reserve` | screen | 2025-01-02 | 2024-11-15 – 2024-12-31 | 31 | 182,398 |
-
-- Rule: labels enter at t+1 and exit at t+1+30, so the **31 signal sessions before each boundary** are removed at build time; only boundaries that have canonical sessions in the following split window are purged, and naturally missing rows at the dataset tail are kept. **Consumers do not purge again.**
-
-### 3.6 manifest.json
-
-Top-level fields:
-
-| Field | Semantics |
-|---|---|
-| `schema_version` | `"samples_v1"`; any column/semantic change must bump it and update this document |
-| `row_counts` | `{samples, meta, by_year:{...}}` |
-| `date_range` | `{start,end}` signal-session range of the samples |
-| `feature_list` | Ordered list of 111 feature columns (48 raw + 15 cs + 48 miss) |
-| `feature_contract` | `raw_features` / `cross_sectional_features` / `missing_indicators` (raw→miss mapping) / `cross_sectional_method` / `cross_sectional_scope` / `macro_differences` |
-| `label_semantics` | Full text of the label formulas, horizon definition, and excess benchmark |
-| `build_params` | Build parameters and canonical statistics (table below) |
-| `data_quality_flags` | `flag_extreme_label: {dtype, rule, handling, count}` |
-| `known_biases` | 4 known biases (survivorship / FRED latest revised / adj_open not executable / `is_common` is a heuristic) |
-| `exclusions_applied` | `{file, asset_ids, dropped_asset_ids_present}` |
-| `input_inventory` | Input census: `stock_directories`=7,662, `market_ticker_files`=6,534, `directories_without_market_csv`=1,128 + list, `financial_ticker_files`=6,534, `calendar_denominator_scope` |
-| `is_common_column` | Notes that `is_common=false` rows are retained and still participate in cross-sectional ranks |
-| `benchmark` | Notes that SPY is absent and excess is the same-date equal-weight mean |
-| `outputs` | `{relative_path: {sha256, rows, bytes}}` for all artifacts; `rows` is present for parquet only |
-| `manifest_hash_note` | Self-reference exclusion note: `manifest.json` is not in its own `outputs` |
-
-Current `build_params` values:
-
-| key | Current value |
-|---|---|
-| `canonical_axis_rule` | dates with ≥ `canonical_min_tickers` `is_common` tickers present |
-| `canonical_min_tickers` / `canonical_minimum_common_tickers` | 500 / 500 |
-| `common_tickers_in_denominator` | 6,168 |
-| `canonical_session_count` | 9,067 |
-| `rank_batch_sessions` / `staging_tickers` | 40 / 50 |
-| `parquet_compression` / `sample_partitioning` | snappy / `samples/year=YYYY/part-00000.parquet` |
-| `derived_windows` | 60 and 120 canonical sessions (past/current data only) |
-| `financial_asof` | latest snapshot with `available_as_of ≤ signal date`; full YoY matching rule |
-| `purge_sessions` / `purge_semantics` | 30 / same as §3.5 |
-| `rows_by_split` | same as §3.5 |
-
-Verification example (consumers check by hash; ~15s for the full 6.3G on this machine):
-
-```python
-import hashlib, json
-from pathlib import Path
-
-root = Path("data/output")
-manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
-for relative, record in manifest["outputs"].items():
-    actual = hashlib.sha256((root / relative).read_bytes()).hexdigest()
-    assert actual == record["sha256"], relative
-```
-
-### 3.7 qc_report.{json,md}
-
-| Field | Semantics |
-|---|---|
-| `rows_total` / `rows_per_year` | Row counts |
-| `label_stats` | Per label, two sets (`all` / `clean`, the latter excluding flagged rows) of `n/mean/std/p50/p99/exact_zero_fraction` |
-| `missingness_per_feature` | Missing count and fraction for every raw/cs feature |
-| `cross_section_size_per_year` | Per year, cross-section `dates/min/median/max` |
-| `purge` | `purge_sessions` / `semantics` / `rows_by_split` |
-| `extreme_labels` | `flag_extreme_label` count, rule, up to 100 example rows |
-| `ticker_failures` | Build-time failure details (currently empty) |
-
-## 4. Baseline figures and verification
-
-| Metric | Current baseline |
-|---|---|
-| samples rows / date range / canonical sessions | 23,938,669 / 1990-01-02 – 2025-12-31 / 9,067 |
-| stock directories / with market.csv / without market data | 7,662 / 6,534 / 1,128 (warrants/units/shells, missing at the source) |
-| SEC: tickers with companyfacts / no data (404) | 7,479 / 183 tickers (165 unique CIKs; funds, ETFs, foreign issuers often have no companyfacts; these tickers still get an all-`missing` financials.csv) |
-| meta rows | 6,532 |
-| flag_extreme_label | 120,510 |
-| purge (fit/select/screen) | 120,987 / 139,158 / 182,398 |
-| output file count | 41 (36 year partitions + meta + splits + manifest + qc×2); `manifest.outputs` therefore holds 40 hashes |
-
-If these numbers change after a rebuild: first use [AGENT.md](../../AGENT.md) invariant 5 to decide whether purge/label logic changed; a rebuild that only changes financial features must be bit-for-bit unchanged.
+The schema labels embedded in these artifacts describe their original contents only. Do not rename, rewrite, or relabel existing output data to make it appear to have been generated under the new `samples` contract. The current-contract correctness suite uses independent fixtures, not these archived datasets as a long-lived oracle.

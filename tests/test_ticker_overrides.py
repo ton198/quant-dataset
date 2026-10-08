@@ -95,6 +95,9 @@ def test_force_rebuild_reorganizes_completed_tickers(tmp_path: Path) -> None:
     rows = {"XOM": universe.TickerRow("XOM", "0000034088", "NYSE", "Exxon Mobil")}
     tickers = ["XOM"]
     calendar = [date(2020, 1, 2)]
+    financial_root = raw_dir / "sec" / "financials"
+    financial_root.mkdir(parents=True)
+    (financial_root / "manifest.json").write_text(json.dumps({"resources": []}), encoding="utf-8")
 
     assert manager._organize_tickers(
         tickers,

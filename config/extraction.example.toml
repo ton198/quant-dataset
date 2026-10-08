@@ -1,0 +1,27 @@
+# OpenAI-compatible provider configuration. Copy to extraction.toml and edit locally.
+# Credentials belong only in config/secrets.toml [secrets].api_key.
+# Do not commit private credentials or use a real provider until source IDs are frozen.
+
+[provider]
+base_url = "https://api.openai.com/v1"
+model = "REPLACE_WITH_MODEL"
+timeout_seconds = 120
+structured_mode = "json_schema" # choose json_object for APIs without JSON Schema support
+
+[extraction]
+max_request_bytes = 100000
+max_output_tokens = 12000
+workers = 4
+model_workers = 1
+prefetch_windows = 4
+
+# Define only explicit lexical rules supported by your selected filing set.
+# Values with no matching policy remain unresolved; locale is never guessed.
+[numeric_policies.us]
+decimal_separator = "."
+group_separator = ","
+allow_parentheses_negative = true
+allow_leading_sign = true
+allow_trailing_sign = false
+allowed_prefixes = ["$"]
+allowed_suffixes = ["%"]

@@ -11,7 +11,7 @@ from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
-from . import financials, macros, market, organize, progress, universe
+from . import financial_events, financials, macros, market, organize, progress, universe
 from .config import SourcesConfig, load_secrets, load_sources
 from .errors import ConfigError, DownloadError
 
@@ -107,13 +107,37 @@ def _organize_ticker_worker(
         organize.organize_market(ticker, raw_dir, organized_dir, _ORGANIZE_SESSION_CALENDAR)
     except Exception as exc:
         errors.append(("market", str(exc)))
-    if cik10:
-        try:
+    try:
+        if cik10:
             organize.organize_financials(
                 cik10, raw_dir, organized_dir, _ORGANIZE_SESSION_CALENDAR, output_ticker=ticker
             )
-        except Exception as exc:
-            errors.append(("financials", str(exc)))
+        else:
+            financial_events.write_empty_artifact(
+                ticker,
+                cik10,
+                organized_dir,
+                reason="no_cik",
+                calendar=_ORGANIZE_SESSION_CALENDAR,
+            )
+    except Exception as exc:
+        errors.append(("financials", str(exc)))
+    if errors:
+        keep_incomplete_financial_diagnostic = False
+        if any(operation == "financials" for operation, _ in errors):
+            try:
+                metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+                artifact = metadata.get("financial_events", {})
+                keep_incomplete_financial_diagnostic = (
+                    isinstance(artifact, dict) and artifact.get("complete") is False
+                )
+            except (OSError, ValueError, UnicodeDecodeError):
+                pass
+        if not keep_incomplete_financial_diagnostic:
+            try:
+                meta_path.unlink()
+            except FileNotFoundError:
+                pass
     return ticker, errors
 
 
@@ -123,6 +147,8 @@ def _ticker_is_organized(
     organized_dir: Path,
     *,
     require_financials: bool,
+    expected_cik: str | None = None,
+    check_cik: bool = False,
 ) -> bool:
     """Return true only when metadata and all expected ticker outputs are present."""
     ticker = ticker.upper()
@@ -154,6 +180,19 @@ def _ticker_is_organized(
         return False
     if require_financials and financials_output not in recorded_outputs:
         return False
+    if check_cik:
+        artifact_valid = financial_events.artifact_is_valid(
+            organized_dir / "stocks" / ticker,
+            metadata,
+            raw_dir=raw_dir,
+            expected_cik=expected_cik,
+        )
+    else:
+        artifact_valid = financial_events.artifact_is_valid(
+            organized_dir / "stocks" / ticker, metadata, raw_dir=raw_dir
+        )
+    if not artifact_valid:
+        return False
     return True
 
 
@@ -178,6 +217,8 @@ def _organize_tickers(
             raw_dir,
             organized_dir,
             require_financials=bool(cik10),
+            expected_cik=cik10,
+            check_cik=True,
         ):
             skipped += 1
         else:

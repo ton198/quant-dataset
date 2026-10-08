@@ -11,6 +11,7 @@ __pycache__/
 
 # Secrets -- never commit
 config/secrets.toml
+config/extraction.toml
 
 # Python caches / venv
 __pycache__/

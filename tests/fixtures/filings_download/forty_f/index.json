@@ -1,0 +1,11 @@
+{
+  "directory": {
+    "name": "/Archives/edgar/data/1234567/000123456724000001/",
+    "item": [
+      {"name": "issuer-2023.htm", "type": "text", "size": "120000"},
+      {"name": "financial-statements.pdf", "type": "application/pdf", "size": "450000"},
+      {"name": "credit-agreement.htm", "type": "text", "size": "30000"},
+      {"name": "logo.jpg", "type": "image", "size": "4000"}
+    ]
+  }
+}

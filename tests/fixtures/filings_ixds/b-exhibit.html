@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml"
+      xmlns:ix="http://www.xbrl.org/2013/inlineXBRL"
+      xmlns:ixt="http://www.xbrl.org/inlineXBRL/transformation/2020-02-12"
+      xmlns:xbrli="http://www.xbrl.org/2003/instance"
+      xmlns:link="http://www.xbrl.org/2003/linkbase"
+      xmlns:xlink="http://www.w3.org/1999/xlink"
+      xmlns:ex="https://example.test/ixds"
+      xmlns:iso4217="http://www.xbrl.org/2003/iso4217">
+  <head><title>IXDS exhibit source</title></head>
+  <body>
+    <ix:header>
+      <ix:references><link:schemaRef xlink:type="simple" xlink:href="taxonomy.xsd"/></ix:references>
+    </ix:header>
+    <p>Exhibit value: <ix:nonFraction id="exhibit-amount" name="ex:Amount" contextRef="shared-context" unitRef="shared-usd" decimals="0" format="ixt:num-dot-decimal">567</ix:nonFraction></p>
+    <ix:continuation id="cross-file-tail">Résumé continuation</ix:continuation>
+    <ix:footnote id="exhibit-footnote" footnoteRole="http://www.xbrl.org/2003/role/footnote" xml:lang="en">Exhibit relationship note</ix:footnote>
+  </body>
+</html>

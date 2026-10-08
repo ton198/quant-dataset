@@ -1,0 +1,3 @@
+<?xml version="1.0"?>
+<!DOCTYPE xbrli:xbrl [<!ENTITY secret SYSTEM "file:///etc/passwd">]>
+<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance">&secret;</xbrli:xbrl>

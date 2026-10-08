@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml"
+      xmlns:ix="http://www.xbrl.org/2013/inlineXBRL"
+      xmlns:ixt="http://www.xbrl.org/inlineXBRL/transformation/2020-02-12"
+      xmlns:xbrli="http://www.xbrl.org/2003/instance"
+      xmlns:link="http://www.xbrl.org/2003/linkbase"
+      xmlns:xlink="http://www.w3.org/1999/xlink"
+      xmlns:ex="https://example.test/filings"
+      xmlns:iso4217="http://www.xbrl.org/2003/iso4217">
+  <head><title>Inline fraction precision fixture</title></head>
+  <body>
+    <div style="display:none">
+      <ix:header>
+        <ix:references><link:schemaRef xlink:type="simple" xlink:href="taxonomy.xsd"/></ix:references>
+        <ix:resources>
+          <xbrli:context id="I1">
+            <xbrli:entity><xbrli:identifier scheme="https://example.test/entity">0000123456</xbrli:identifier></xbrli:entity>
+            <xbrli:period><xbrli:instant>2024-01-01</xbrli:instant></xbrli:period>
+          </xbrli:context>
+          <xbrli:unit id="USDPerShare">
+            <xbrli:divide>
+              <xbrli:unitNumerator><xbrli:measure>iso4217:USD</xbrli:measure></xbrli:unitNumerator>
+              <xbrli:unitDenominator><xbrli:measure>xbrli:shares</xbrli:measure></xbrli:unitDenominator>
+            </xbrli:divide>
+          </xbrli:unit>
+        </ix:resources>
+      </ix:header>
+    </div>
+    <p>Exact ratio: <ix:fraction name="ex:Rate" contextRef="I1" unitRef="USDPerShare">
+      <ix:numerator format="ixt:num-dot-decimal" sign="-" scale="1">1,234</ix:numerator>
+      <ix:denominator format="ixt:num-dot-decimal">200</ix:denominator>
+    </ix:fraction></p>
+  </body>
+</html>

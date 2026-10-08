@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+            xmlns:xbrli="http://www.xbrl.org/2003/instance"
+            targetNamespace="http://www.xbrl.org/2003/instance"
+            elementFormDefault="qualified">
+  <xsd:simpleType name="periodType"><xsd:restriction base="xsd:token"><xsd:enumeration value="instant"/><xsd:enumeration value="duration"/></xsd:restriction></xsd:simpleType>
+  <xsd:simpleType name="decimalsType"><xsd:union memberTypes="xsd:integer"><xsd:simpleType><xsd:restriction base="xsd:string"><xsd:enumeration value="INF"/></xsd:restriction></xsd:simpleType></xsd:union></xsd:simpleType>
+  <xsd:attribute name="periodType" type="xbrli:periodType"/>
+  <xsd:attributeGroup name="factAttrs"><xsd:attribute name="id" type="xsd:ID"/><xsd:anyAttribute namespace="##other" processContents="lax"/></xsd:attributeGroup>
+  <xsd:attributeGroup name="itemAttrs"><xsd:attributeGroup ref="xbrli:factAttrs"/><xsd:attribute name="contextRef" type="xsd:IDREF" use="required"/></xsd:attributeGroup>
+  <xsd:attributeGroup name="numericItemAttrs"><xsd:attributeGroup ref="xbrli:itemAttrs"/><xsd:attribute name="unitRef" type="xsd:IDREF" use="required"/><xsd:attribute name="decimals" type="xbrli:decimalsType"/><xsd:attribute name="precision" type="xsd:string"/></xsd:attributeGroup>
+  <xsd:attributeGroup name="fractionAttrs"><xsd:attributeGroup ref="xbrli:itemAttrs"/><xsd:attribute name="unitRef" type="xsd:IDREF" use="required"/></xsd:attributeGroup>
+  <xsd:complexType name="decimalItemType"><xsd:simpleContent><xsd:extension base="xsd:decimal"><xsd:attributeGroup ref="xbrli:numericItemAttrs"/></xsd:extension></xsd:simpleContent></xsd:complexType>
+  <xsd:complexType name="stringItemType"><xsd:simpleContent><xsd:extension base="xsd:string"><xsd:attributeGroup ref="xbrli:itemAttrs"/></xsd:extension></xsd:simpleContent></xsd:complexType>
+  <xsd:simpleType name="nonZeroDecimal"><xsd:union><xsd:simpleType><xsd:restriction base="xsd:decimal"><xsd:minExclusive value="0"/></xsd:restriction></xsd:simpleType><xsd:simpleType><xsd:restriction base="xsd:decimal"><xsd:maxExclusive value="0"/></xsd:restriction></xsd:simpleType></xsd:union></xsd:simpleType>
+  <xsd:element name="numerator" type="xsd:decimal"/>
+  <xsd:element name="denominator" type="xbrli:nonZeroDecimal"/>
+  <xsd:complexType name="fractionItemType"><xsd:sequence><xsd:element ref="xbrli:numerator"/><xsd:element ref="xbrli:denominator"/></xsd:sequence><xsd:attributeGroup ref="xbrli:fractionAttrs"/></xsd:complexType>
+  <xsd:complexType name="tupleType"><xsd:sequence><xsd:any minOccurs="0" maxOccurs="unbounded" processContents="lax"/></xsd:sequence><xsd:attributeGroup ref="xbrli:factAttrs"/></xsd:complexType>
+  <xsd:element name="item" type="xsd:anyType" abstract="true"/>
+  <xsd:element name="tuple" type="xbrli:tupleType" abstract="true"/>
+  <xsd:element name="xbrl" type="xsd:anyType"/>
+</xsd:schema>

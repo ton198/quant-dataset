@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"
+            xmlns:link="http://www.xbrl.org/2003/linkbase"
+            xmlns:xlink="http://www.w3.org/1999/xlink">
+  <link:schemaRef xlink:type="simple" xlink:href="https://example.invalid/taxonomy.xsd"/>
+</xbrli:xbrl>

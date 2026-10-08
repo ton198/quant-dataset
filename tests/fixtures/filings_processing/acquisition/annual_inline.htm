@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml"
+      xmlns:ix="http://www.xbrl.org/2013/inlineXBRL"
+      xmlns:ixt="http://www.xbrl.org/inlineXBRL/transformation/2020-02-12"
+      xmlns:xbrli="http://www.xbrl.org/2003/instance"
+      xmlns:link="http://www.xbrl.org/2003/linkbase"
+      xmlns:xlink="http://www.w3.org/1999/xlink"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xmlns:ex="https://example.test/filings"
+      xmlns:iso4217="http://www.xbrl.org/2003/iso4217">
+  <head><title>iXBRL parser fixture</title></head>
+  <body>
+    <ix:header>
+      <ix:hidden><ix:nonNumeric name="ex:TextFact" contextRef="I1">hidden value</ix:nonNumeric></ix:hidden>
+      <ix:references><link:schemaRef xlink:type="simple" xlink:href="issuer.xsd"/></ix:references>
+      <ix:resources>
+        <xbrli:context id="I1"><xbrli:entity><xbrli:identifier scheme="https://example.test/entity">0000123456</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>2024-01-01</xbrli:startDate><xbrli:endDate>2024-01-02</xbrli:endDate></xbrli:period></xbrli:context>
+        <xbrli:unit id="USD"><xbrli:measure>iso4217:USD</xbrli:measure></xbrli:unit>
+      </ix:resources>
+    </ix:header>
+    <p>Scaled amount: <ix:nonFraction name="ex:Amount" contextRef="I1" unitRef="USD" decimals="0" scale="3" sign="-" format="ixt:num-dot-decimal">1,234</ix:nonFraction></p>
+
+    <ix:nonNumeric name="ex:TextFact" contextRef="I1" continuedAt="part-2">Résumé </ix:nonNumeric>
+    <ix:continuation id="part-2">continued text</ix:continuation>
+    <h1>Annual report</h1>
+  </body>
+</html>

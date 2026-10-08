@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+            xmlns:xbrli="http://www.xbrl.org/2003/instance"
+            xmlns:xbrldt="http://xbrl.org/2005/xbrldt"
+            xmlns:ex="https://example.test/filings"
+            targetNamespace="https://example.test/filings"
+            elementFormDefault="qualified">
+  <xsd:import namespace="http://www.xbrl.org/2003/instance" schemaLocation="https://taxonomy.example.test/xbrli.xsd"/>
+  <xsd:import namespace="http://xbrl.org/2005/xbrldt" schemaLocation="https://taxonomy.example.test/xbrldt.xsd"/>
+  <xsd:element name="Amount" type="xbrli:decimalItemType" substitutionGroup="xbrli:item" nillable="true" xbrli:periodType="duration"/>
+  <xsd:element name="NilAmount" type="xbrli:decimalItemType" substitutionGroup="xbrli:item" nillable="true" xbrli:periodType="instant"/>
+  <xsd:element name="DefaultAmount" type="xbrli:decimalItemType" substitutionGroup="xbrli:item" nillable="true" xbrli:periodType="instant" default="12"/>
+  <xsd:element name="Rate" type="xbrli:fractionItemType" substitutionGroup="xbrli:item" nillable="true" xbrli:periodType="instant"/>
+  <xsd:element name="TextFact" type="xbrli:stringItemType" substitutionGroup="xbrli:item" nillable="true" xbrli:periodType="duration"/>
+  <xsd:element name="DisclosureText" type="xbrli:stringItemType" substitutionGroup="xbrli:item" nillable="true" xbrli:periodType="duration"/>
+  <xsd:element name="Record" type="xbrli:tupleType" substitutionGroup="xbrli:tuple"/>
+  <xsd:element name="NestedRecord" type="xbrli:tupleType" substitutionGroup="xbrli:tuple"/>
+  <xsd:element name="RegionAxis" type="xbrldt:explicitDimensionItem" substitutionGroup="xbrldt:dimensionItem" abstract="true"/>
+  <xsd:element name="ProductAxis" type="xbrldt:typedDimensionItem" substitutionGroup="xbrldt:dimensionItem" abstract="true" xbrldt:typedDomainRef="#ProductDomain"/>
+  <xsd:element name="NorthMember" type="xsd:string"/>
+  <xsd:element name="ProductDomain" id="ProductDomain" type="xsd:string"/>
+</xsd:schema>

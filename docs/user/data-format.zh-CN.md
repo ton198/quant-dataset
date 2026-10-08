@@ -1,142 +1,89 @@
 [English](data-format.md) | **简体中文**
 
-# 样本数据格式（data/output/）
+# 样本数据格式（`samples`）
 
-冻结样本包位于 `data/output/`，schema 版本 `samples_v1`（见 `manifest.json`）。本文所有数字与仓库当前实物一致；重建后以新生成的 `manifest.json` / `qc_report.*` 为准。
+本文说明唯一维护的、不含财务数据的 `samples` 契约，适用于新构建。现有 bundle 按原样保留为历史产物：2026-10-03 发布在 `data/output/` 的 manifest 仍为 `schema_version="samples_v3"`；旧 147 列 output 保留在 `data/output-v1-backup-20261003T172214933236Z`；冻结 baseline 另行保留。读取前核对各 bundle 实际 manifest 与 schema。旧标签仅用于识别 artifact 内容，不是产品选择器或兼容别名。旧发布报告不能验证当前源码或新构建。
 
-## 1. 文件清单
+## 1. 候选包
 
-| 文件 | 规模（当前实物） | 说明 |
-|---|---|---|
-| `samples/year=YYYY/part-00000.parquet` | 36 个分区，23,938,669 行 | 训练样本长表，Hive 分区 |
-| `meta.parquet` | 6,532 行 | 每股票汇总：`asset_id`、`is_common`、`first_date`、`last_date`、`n_rows`、`missing_frac` |
-| `splits.json` | — | 四段切分边界、purge 语义与 `purged_windows`、每段行数 |
-| `manifest.json` | — | schema、列清单、契约、偏差声明、输出 sha256 |
-| `qc_report.json` / `qc_report.md` | — | QC：行数、标签统计、缺失率、截面规模、极端标签、失败明细 |
-
-## 2. dtype 与分区约定
-
-| 项 | 约定 |
+| 文件 | 内容 |
 |---|---|
-| 分区路径 | `samples/year=YYYY/part-00000.parquet`，每年一个文件，可直接 glob |
-| 压缩 | snappy |
-| `date` | `date32[day]`（信号日，canonical session） |
-| `asset_id` | string（ticker，大写；当前为 `large_string` 物理类型） |
-| `is_common` | bool |
-| `flag_extreme_label` | uint8 |
-| `f_raw_*` / `f_cs_*` / `target_return_*` / `excess_*` | float32；非有限值已归一为 null（NaN） |
-| `miss_*` | uint8（1 = 对应 `f_raw_*` 为 null） |
+| `samples/year=YYYY/part-00000.parquet` | 按年分区的 signal-date/ticker 行 |
+| `meta.parquet` | 每 asset 汇总；`missing_frac` 基于 purge 后 43 个非财务 raw 列 |
+| `splits.json` | split 边界与构建期 purge 记录 |
+| `manifest.json` | 新构建使用单一契约标签 `schema_version="samples"`、有序 96 列 feature list、provenance/output hashes、构建参数和标签 |
+| `qc_report.json` / `qc_report.md` | 行数/标签/缺失/截面/purge/extreme-label/ticker-failure 汇总；没有财务覆盖章节 |
 
-## 3. 147 列总表
+新的 `samples` 构建只读取 organized 行情、宏观输入与 exclusions。它不读取财务文件或财务 `_meta.json` 记录，也不做财务预检、覆盖率或输入盘点。现有 SEC 结构化文件仍是独立 organized 数据，不是样本列或模型输入。
 
-| 组 | 列 | 数量 | 说明 |
-|---|---|--:|---|
-| 键 / 标志 | `date`、`asset_id`、`is_common`、`flag_extreme_label` | 4 | `flag_extreme_label=1` 共 120,510 行（≈0.5%） |
-| 原始特征 | `f_raw_*` | 48 | 量价 10 + 财务 5 + 宏观 33 |
-| 截面特征 | `f_cs_*` | 15 | 股票维度特征按日 rank→逆正态 CDF（≈N(0,1)），宏观不参与 |
-| 缺失指示 | `miss_*` | 48 | 与 `f_raw_*` 一一对应 |
-| 标签 | `target_return_1d..30d` | 30 | 见第 5 节公式 |
-| 标签 | `excess_5d`、`excess_21d` | 2 | 相对同日 is_common 等权均值基准的超额 |
+## 2. 类型与物理列序
 
-`f_cs_*` 对应关系：`f_cs_<name>` 是 `f_raw_<name>` 的当日截面变换；截面范围为当日该列非空的全部股票（含 `is_common=false` 的行），宏观列因同日恒定被排除。方法：`(rank - 0.5) / 当日非空数` 经逆正态 CDF。
+Parquet 物理类型：`date` 为 Arrow `date32`，ticker `asset_id` 为 Arrow `large_string`，`is_common` 为 bool，`flag_extreme_label` 与 `miss_*` 为 uint8，特征/标签数值为 float32。canonical 列序：
 
-## 4. f_raw_* 明细
+```text
+date, asset_id, is_common, flag_extreme_label,
+43 个非财务 f_raw 列,
+10 个 f_cs 列,
+43 个 miss 列,
+32 个 label 列
+```
 
-量价（10）：
+| 组 | 数量 | 说明 |
+|---|---:|---|
+| 键 / 标志 | 4 | `date`、`asset_id`、`is_common`、`flag_extreme_label` |
+| Raw 特征 | 43 | 10 个行情/派生股票特征 + 33 个宏观特征 |
+| 截面特征 | 10 | 10 个股票 raw 特征的同日 rank 变换；不含宏观 rank |
+| 缺失指示 | 43 | 每个 raw 特征一列 |
+| 特征列 | **96** | 43 + 10 + 43；`manifest.feature_list` 顺序与物理特征顺序一致 |
+| 标签 | 32 | 30 个 forward-return 列 + 2 个 excess-return 列 |
+| 样本物理列 | **132** | 4 + 96 + 32 |
 
-| 列 | 含义 |
+当前 schema 不含财务 raw、截面或缺失指示列。此前 51 个财务列（17 raw + 17 CS + 17 MISS）均已从活跃 schema 移除。
+
+## 3. 43 个 raw 特征
+
+### 行情/派生股票特征（10）
+
+| 列 | 定义 |
 |---|---|
-| `f_raw_return_1d` / `_5d` / `_20d` | 收盘价 1/5/20 session 收益率（organize 阶段计算，past-only） |
-| `f_raw_momentum_60` / `_120` | `adj_close(t)/adj_close(t-60/120) - 1`（canonical 轴） |
-| `f_raw_volatility_20` | close 日收益 20 session 滚动标准差（organize 阶段） |
-| `f_raw_volatility_60` | canonical 轴 adjusted_close 日收益 60 session 滚动标准差 |
-| `f_raw_volume_ratio_20` | volume / 20 session 均值（organize 阶段） |
-| `f_raw_volume_zscore_60` | volume 相对 60 session 均值/标准差的 z-score（canonical 轴） |
+| `f_raw_return_1d`、`f_raw_return_5d`、`f_raw_return_20d` | organized 行情面板中的既有收盘到收盘收益 |
+| `f_raw_volatility_20` | 既有 20-session 收益波动率 |
+| `f_raw_volume_ratio_20` | 既有 volume / 20-session 平均 volume |
 | `f_raw_intraday_range` | `(high - low) / close` |
+| `f_raw_momentum_60`、`f_raw_momentum_120` | canonical 轴上的 `adj_close(t) / adj_close(t-n) - 1` |
+| `f_raw_volatility_60` | canonical 轴上 adjusted-close return 的 60 位滚动标准差 |
+| `f_raw_volume_zscore_60` | volume 相对于 60 位滚动均值/标准差的 z-score |
 
-财务（5，point-in-time 快照，`available_as_of <= 信号日` 的最新申报）：
+### 宏观特征（33）
 
-| 列 | 含义 |
-|---|---|
-| `f_raw_revenue_yoy` / `f_raw_net_income_yoy` / `f_raw_operating_income_yoy` / `f_raw_assets_yoy` | 同比增速（优先同 fiscal_period 的上一 fiscal_year；无标识时取一年前 ±15 天内的最近报告期） |
-| `f_raw_days_since_filing` | 信号日距最近可用申报的天数 |
+11 个配置宏观序列各有水平值及 canonical 轴位序 `_d1`、`_d5` 差分：`BAMLH0A0HYM2`、`CPIAUCSL`、`CPILFESL`、`DCOILWTICO`、`DEXUSEU`、`DGS10`、`DGS2`、`FEDFUNDS`、`PAYEMS`、`UNRATE`、`VIXCLS`。现有宏观可见性/ffill 口径不变；FRED 值为 latest-revised，非 vintage。
 
-宏观（33 = 11 序列 × 水平 / `_d1` / `_d5`），序列：
+### 截面与缺失指示
 
-| 序列 | 别名 |
-|---|---|
-| `BAMLH0A0HYM2` | 美国高收益债 OAS |
-| `CPIAUCSL` / `CPILFESL` | CPI / 核心 CPI |
-| `PAYEMS` / `UNRATE` | 非农就业 / 失业率 |
-| `FEDFUNDS` / `DGS2` / `DGS10` | 联邦基金利率 / 2Y / 10Y 国债收益率 |
-| `DCOILWTICO` / `DEXUSEU` / `VIXCLS` | WTI 原油 / 美元兑欧元 / VIX |
+10 个股票 raw 特征各生成一个 `f_cs_<name>`：逐日对非空行做 average rank、`(rank - 0.5) / n`，再做逆正态变换。非 common 行仍参与截面；宏观列因同日恒定而排除。
 
-水平列名为 `f_raw_m_<SERIES>`；`_d1`、`_d5` 为 canonical 日期轴上的位置差（不做 forward-fill）。序列可见性规则：参考期 + 1 个月后的第一个 session（保守近似，FRED 响应无 release timestamp）。
+43 个 raw 列各有一个 `miss_<name>`：对应 raw 值为空时置 1。生成指示前，非有限 raw 值先归一为 null。
 
-## 5. 标签语义
+## 4. 标签与 flags
 
-公式（`manifest.json.label_semantics`，已实测重算逐位吻合）：
+既有 32 个标签不变：
 
 ```text
 adjusted_open = open × adj_close / close
-target_return_hd = adjusted_open(t+1+h) / adjusted_open(t+1) − 1
-excess_5d/21d    = target_return_5d/21d − 同日 is_common 且 flag_extreme_label=0 的等权均值
+target_return_hd = adjusted_open(t+1+h) / adjusted_open(t+1) - 1，h = 1..30
+excess_5d/21d = target_return_5d/21d - 同日普通股等权均值
 ```
 
-```text
-信号 t        t+1 入场          t+1+h 出场
-  │            │                  │
-  │  特征止于 t │  标签窗口 h 个 session │
-  └────────────┴──────────────────┘
-     h 为 canonical session 位置偏移；入场/出场 bar 必须存在且为正有限值，不做替代或 ffill
-```
+excess 基准只用 `is_common=true` 且 `flag_extreme_label=0` 的行。signal 行在下一 canonical session 开盘入场；不替换或填充中间 bar。所需入场/出场 bar 不可用时，标签自然为空。
 
-- 主训练目标为 `excess_5d` / `excess_21d`；其余 `target_return_*` 为辅助任务（manifest 声明）。
-- 数据集尾部（最后约 31 个信号日）无足够未来价格，长 horizon 标签自然为 null，属预期。
-- `flag_extreme_label=1`：1..30 session 标签窗口穿过价格毛刺（相邻 `adjusted_open` 比值落在 [0.5, 2.0] 之外）。该行保留在表中，但已被排除出 excess 基准均值；训练侧应剔除或降权。
+`flag_extreme_label` 标记标签窗跨越 adjusted-open 相邻 session 比值超出 `[0.5, 2.0]` 的情况。标记行保留在样本里，并从 excess 基准均值中排除。按 signal date 切分：fit 至 2018、select 为 2019–2020、screen 为 2021–2024、reserve 从 2025 起。适用 split 边界前 31 个 canonical-calendar signal session 在构建时 purge；消费者不再 purge。
 
-## 6. splits.json 与 purge
+## 5. `meta.parquet`、manifest 与核验
 
-四段切分（构建期已按边界 purge，**下游不要重复 purge**）：
+`meta.parquet.missing_frac` = purge 后保留样本的 43 个 raw 特征空值数 / `保留行数 × 43`。不含 CS/MISS、标签、键/标志或财务列。
 
-| split | 区间 | retained | before_purge | purged |
-|---|---|--:|--:|--:|
-| fit | 1990-01-02 – 2018-12-31 | 15,253,930 | 15,374,917 | 120,987 |
-| select | 2019-01-01 – 2020-12-31 | 1,966,167 | 2,105,325 | 139,158 |
-| screen | 2021-01-01 – 2024-12-31 | 5,168,902 | 5,351,300 | 182,398 |
-| reserve | 2025-01-01 – 2025-12-31 | 1,549,670 | 1,549,670 | 0 |
+每个新 manifest 记录唯一的 `schema_version="samples"` 身份、精确有序的 96 列 feature list、semantic contract 与 schema/semantic fingerprints、label semantics 和构建参数；所有实际消费的行情、宏观与 exclusions 输入均以流式 SHA-256/字节数记录；还包括已哈希的代码文件/依赖身份。发布 manifest 前会重新核对输入哈希。单独的 `input_inventory` 仅为计数，不是内容 provenance。每个登记输出均记录 SHA-256、字节数和行数；validation 与 `query-samples` 检查全部登记文件。财务文件和 metadata 不会作为样本输入被读取或登记。
 
-purge 语义：`purge_sessions=30`。边界前 31 个信号日被整行剔除（标签在 t+1 入场、t+31 出场，最长 horizon 会伸进下一段）；数据集尾端无后续段，不 purge。`splits.json` 顶层的 `purge_semantics` 是文字版规则；`purged_windows` 记录三个边界的字段：
+使用独立当前契约预期值 fixtures 与不变式核验候选：row keys/flags/labels、split/purge、ticker failures、raw/CS/MISS 值，以及 schema/列序/dtype。不要把跨代 projection 当作正确性 oracle。候选构建本身不等于发布。现有 `data/output/` 是 manifest 标签为 `samples_v3` 的原样历史产物；旧 147 列 output 与冻结 baseline 分别保留。不声称性能实测或财务正确性。
 
-| 字段 | 含义 |
-|---|---|
-| `split_start` / `boundary_date` | 新 split 起始日 / 该段第一个 canonical session |
-| `purged_split` | 被剔除行所属的 split |
-| `first_purged_session` / `last_purged_session` | 被剔除信号日区间 |
-| `sessions` / `rows_removed` | 剔除 31 个 session；剔除行数 |
-
-## 7. manifest.json 关键字段
-
-| 字段 | 说明 |
-|---|---|
-| `schema_version` | 当前 `samples_v1` |
-| `outputs` | 40 项文件 → `{sha256, rows, bytes}`；`manifest.json` 自身不参与哈希 |
-| `row_counts` | `samples` 总数、`meta` 行数、`by_year` |
-| `feature_list` | 111 个特征列（48+15+48），顺序与文件中特征列一致 |
-| `feature_contract` | `raw_features`、`cross_sectional_features`、`missing_indicators`、截面/宏观定义 |
-| `label_semantics` | 标签公式与主目标声明 |
-| `build_params` | canonical 规则（≥500 is_common）、9,067 session、purge、切分与行数 |
-| `data_quality_flags` | `flag_extreme_label` 规则、数量、处理建议 |
-| `known_biases` | 幸存者偏差、FRED 非 vintage、adjusted open 非成交价、is_common 后缀启发式 |
-| `exclusions_applied` | 剔除清单文件与生效的 `asset_ids` |
-| `input_inventory` | 输入盘点：7,662 个股票目录、6,534 个 market.csv、1,128 个无 market.csv 目录 |
-
-## 8. meta.parquet 与 qc_report
-
-- `meta.parquet`：仅含产出过保留样本的股票（6,532）。`missing_frac` 是该股票全部 `f_raw_*` 单元格的缺失比例；`first_date`/`last_date` 为其样本覆盖。
-- `qc_report.json`：`rows_total`、`rows_per_year`、`label_stats`（每标签 all/clean 两组统计）、`missingness_per_feature`、`cross_section_size_per_year`、`purge`、`extreme_labels`（含最多 100 条示例）、`ticker_failures`。
-- `qc_report.md`：上述内容的可读版；缺失率最高的是财务类（≈96%）与 `BAMLH0A0HYM2`（87%），解释见 [recommended-usage.zh-CN.md](recommended-usage.zh-CN.md) 第 3 节。
-
-## 9. 校验建议
-
-重建后按 `manifest.json.outputs` 逐项校验 sha256；行数不一致时优先看 `qc_report` 的 `ticker_failures` 与 `input_inventory`。列级契约与开发者约定见 [AGENT.zh-CN.md](../../AGENT.zh-CN.md)。
+安全构建候选时，CLI 默认 `--out data/samples-output`；`workspace_root` 默认为 CWD，也可用 `--workspace-root` 指定已存在目录。默认 exclusions 文件在 workspace 下的 `config/universes/exclusions_v1.json`；配置缺失时报错，显式传入的 exclusions 路径相对于 CWD。guard 保护 `<workspace_root>/data/` 及相关路径；对于常规 `<data>/organized` 输入，还会独立于 `workspace_root` 保护其旁边识别出的 raw/output/baseline/archive 路径。guard 拒绝符号链接路径/祖先、非空目标，以及与受保护路径或实际输入重叠的目标。使用保护范围外的全新 `--out`；不得指向保留的 `data/output/`。

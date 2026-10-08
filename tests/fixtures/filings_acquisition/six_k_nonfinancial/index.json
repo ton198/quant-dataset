@@ -1,0 +1,10 @@
+{
+  "directory": {
+    "name": "/Archives/edgar/data/2/000000000224000003/",
+    "item": [
+      {"name": "current-report.htm", "type": "text", "size": "20"},
+      {"name": "credit-agreement.htm", "type": "text", "size": "25"},
+      {"name": "presentation.pdf", "type": "application/pdf", "size": "18"}
+    ]
+  }
+}

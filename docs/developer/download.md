@@ -4,7 +4,7 @@
 
 > Scope: changes to `src/download/`, `config/sources.toml`, `config/universes/*`, progress/locking, and SEC financial extraction.
 > Related: [architecture.md](architecture.md) (data flow and module boundaries), [data-contracts.md](data-contracts.md) (field contracts), [known-quirks.md](known-quirks.md) (data-source realities), [testing.md](testing.md) (verification).
-> Everything below describes the actual code: `src/download/*.py`, `src/cli/main.py`, `config/sources.toml`.
+> Existing download/organize behavior below describes `src/download/*.py`, `src/cli/main.py`, and `config/sources.toml`; that behavior is unchanged by the active `samples` contract. The selected financial event/fact output is a separate nine-concept structured extract, not a full filing archive and not a samples input. The bounded filing archive is a separate implemented workflow; see [financial-filing-archive.md](financial-filing-archive.md) for its scope and current evidence.
 
 ## 1. Data flow and entry points
 
@@ -17,9 +17,12 @@ CLI: quant-dataset download --stage {market|financials|macros|organize|all} [--s
                ├─ market    → raw/yahoo/<TICKER>/<start>_<end>.csv
                ├─ financials→ raw/sec/financials/<sha256>.json (companyfacts + submissions + historical pages)
                ├─ macros    → raw/fred/<SERIES>/<sha256>.json
-               └─ organize  → organized/stocks/<TICKER>/{market.csv,financials.csv,_meta.json}
+                └─ organize  → organized/stocks/<TICKER>/{market.csv,financials.csv,
+                                  financial_events.parquet,financial_facts.parquet,_meta.json}
                               organized/shared/{macro.csv,_meta.json}
 ```
+
+The financial organizer outputs shown above are separate files. The active `samples` builder reads only organized market/macro panels and exclusions; it does not read financial files or financial `_meta.json` records.
 
 - `STAGES = ("market", "financials", "macros", "organize")`; the CLI expands `--stage all` into all four.
 - `--data-dir` (default `data`) remaps `raw_dir/organized_dir/progress_file/progress_tmp_file/progress_lock_file` through `manager._with_data_dir`. Relative paths resolve against `repo_root`, and `repo_root` also determines where `config/` is read from, so the command must run from the repository root.
@@ -36,7 +39,8 @@ CLI: quant-dataset download --stage {market|financials|macros|organize|all} [--s
 | `financials.py` | Download companyfacts, submissions, and historical submission pages; content addressing + manifest | `fetch_financials`, `_fetch`, `_read_manifest`, `_manifest_mapping` |
 | `macros.py` | Download FRED observation series; content addressing + manifest; per-series progress | `fetch_macros` |
 | `organize.py` | Market cleaning/derived columns, macro session alignment, merged `_meta.json` writes | `organize_market`, `organize_macros`, `_market_quality`, `write_meta` |
-| `organize_financials.py` | SEC facts → session-level as-of financial snapshots (the most complex extraction logic in this repo) | `organize_financials`, `_CONCEPTS`, `_submission_rows`, `_fact_for_period`, `_fiscal_identifiers` |
+| `organize_financials.py` | SEC facts → legacy session snapshots plus pre-snapshot filing-event artifact generation | `organize_financials`, `_CONCEPTS`, `_submission_rows`, `_fact_for_period`, `_fiscal_identifiers` |
+| `financial_events.py` | Normalized filing events and finite fact-version Parquet tables under `financial_events_v1` | `organize_artifact`, `write_tables`, `artifact_is_valid`, `write_empty_artifact` |
 | `progress.py` | Atomic progress writes + PID-based exclusive lock + stale-lock reclaim | `Progress`, `initialize`, `save_atomic`, `acquire_lock` |
 | `config.py` | Load `secrets.toml` / `sources.toml` into dataclasses | `load_secrets`, `load_sources`, `SourcesConfig` |
 | `errors.py` | Domain exceptions | `ConfigError`, `DownloadError`, `OrganizeError` |
@@ -50,12 +54,14 @@ CLI: quant-dataset download --stage {market|financials|macros|organize|all} [--s
 | `data/raw/sec/financials/<sha256>.json` + `manifest.json` | `financials.fetch_financials` | One flat content-addressed directory shared by all CIKs; manifest is `{"resources": {logical_key: [record,...]}}` |
 | `data/raw/fred/<SERIES>/<sha256>.json` + `manifest.json` | `macros.fetch_macros` | Same as above, with `logical_key = observations:<series>` |
 | `data/organized/stocks/<TICKER>/market.csv` | `organize_market` | Sessions inside the calendar; includes `quality_flag` and derived columns |
-| `data/organized/stocks/<TICKER>/financials.csv` | `organize_financials` | One row per session; writes all-missing rows even with no input |
-| `data/organized/stocks/<TICKER>/_meta.json` | `organize._write_meta` / `organize_financials._write_meta` | `inputs`/`outputs` both record sha256; merged by path, preserving older records |
+| `data/organized/stocks/<TICKER>/financials.csv` | `organize_financials` | Legacy one-row-per-session latest whole-filing snapshot; this contract remains unchanged |
+| `data/organized/stocks/<TICKER>/financial_events.parquet` | `financial_events.organize_artifact` | One valid filing event per row, including filings with no financial facts |
+| `data/organized/stocks/<TICKER>/financial_facts.parquet` | `financial_events.organize_artifact` | Normalized finite USD concept facts by source filing and actual period/version |
+| `data/organized/stocks/<TICKER>/_meta.json` | `organize._write_meta` / `financial_events.commit_artifact_meta` | Records legacy and event/fact outputs; nested `financial_events` contract, completeness, CIK/raw-input identity, resource states, quality/rejection counts, calendar, hashes and row counts |
 | `data/organized/shared/macro.csv` | `organize_macros` | Wide table, session-aligned + ffill |
 | `data/.download_progress` (+ `.tmp`, `.lock`) | `progress.py` | Per-item status; the lock file contains the PID |
 
-## 4. SEC financial ingestion in three layers
+## 4. SEC financial ingestion: legacy snapshot plus filing-event artifact
 
 ### 4.1 Download layer: `fetch_financials(cik10, cfg, secrets, raw_dir)`
 
@@ -118,7 +124,7 @@ Mechanics:
 5. `10-Q` → anchor on the **nearest earlier 10-K**: fiscal_year is that 10-K's fy (or its report year), and the quarter number is the rank (1–3) of this report date among the distinct 10-Q `reportDate`s after the anchor up to this period end → `(annual_year+1, Qn)`. This is why Apple-style non-calendar fiscal years are not mislabeled as calendar quarters;
 6. everything else (including a 10-Q that cannot be anchored) → `(None, None)`: leaving it blank beats mislabeling.
 
-### 4.4 As-of session alignment (`organize_financials` main loop)
+### 4.4 Legacy daily-CSV as-of session alignment (`organize_financials` main loop)
 
 - `report_rows` is sorted by `(available_at, accession_number)`, where `available_at = filingDate`; `report_filed_dates` is the parallel list.
 - The sorted calendar is scanned with a **two-pointer prefix sweep**: `while report_filed_dates[visible_count] < session: visible_count += 1`, then `report_rows[visible_count-1]` is selected. A filing therefore becomes visible only on the session **after** its filing date (strict `<`): the filing date itself never uses that information, conservatively aligning to the disclosure time.
@@ -127,6 +133,25 @@ Mechanics:
 - Amendments: `is_amendment = form.endswith("/A")`. `quality_status` = if an earlier original filing with the same `report_period_end` exists → `"ok"` when any concept has a value, otherwise `"missing"`; if no original exists → `"amendment_only"`; for a non-amendment → `"ok"` with values / `"missing"` without. An amendment never resurrects an earlier original filing.
 - Output column order is fixed: `date, available_as_of, accession_number, form, is_amendment, fiscal_year(Int64), fiscal_period, report_period_end, days_since_filing, <keys of _CONCEPTS in order>, quality_status`; dates are written as `%Y-%m-%d`.
 - `_write_meta` merges inputs keyed by path; when this run has no owned inputs, old `sec/financials/` inputs are dropped so provenance never points at raw files that no longer exist (test-covered).
+
+### 4.5 Existing organized event/fact extract (`financial_events_v1`; not a full archive)
+
+`organize_financials` builds the existing `financial_events_v1` artifact from selected raw SEC submissions and Company Facts **before** it chooses the legacy daily snapshot. The legacy `financials.csv` schema and whole-row replacement behavior remain unchanged; the artifact coexists with it and is never reconstructed from it. Its facts are limited to the existing nine-concept whitelist; it is not a complete XBRL or filing-text archive. `samples` does not read this artifact or the financial metadata.
+
+| Table | Grain and stable fields |
+|---|---|
+| `financial_events.parquet` | One valid event per filing, including non-financial/no-fact filings. Fixed fields: `event_id`, `asset_id`, `cik10`, `accession_number`, `filed_date`, `effective_visible_session`, `form`, `is_amendment`, `report_period_end`, `fiscal_year`, `fiscal_period`, `fiscal_key_source`, `quality_status`, `source_submission_path`, `source_submission_sha256`, `source_submission_locator`. |
+| `financial_facts.parquet` | One normalized candidate per source event, concept and actual period/version. Fixed fields: `fact_version_id`, `event_id`, `concept`, float64 `value`, `unit`, `taxonomy`, `tag`, `period_kind`, `period_start`, `report_period_end`, `duration_days`, `fiscal_year`, `fiscal_period`, `fiscal_key_source`, `filed_date`, `effective_visible_session`, `fact_accession_number`, `match_method`, `source_fact_path`, `source_fact_sha256`, `source_fact_locator`. |
+
+Both tables use fixed Arrow schemas even when empty. Event IDs use normalized zero-padded CIK + accession when accession exists; otherwise the source submission hash + record locator form a stable identity and an accession-absence diagnostic is counted; its counter key is not a stable contract. Facts link to one event. Fact accession matching is exact; when the fact has no accession, only a unique `(filed_date, report_period_end, base form)` event match is allowed. Ambiguous/unmatched candidates are rejected, as are contradictory values for one event/tag/unit/actual period; download time is not used to order disclosures.
+
+Extraction iterates the existing nine-concept `_CONCEPTS` whitelist. Numeric conversion and finite screening happen **before** tag-priority selection, so a higher-priority NaN/inf cannot hide a lower-priority finite fact. Currency is not inferred or converted; only USD candidates are retained. The artifact records tag, taxonomy, unit, source locator, and period metadata. `assets`, `liabilities`, and `equity` must be instant facts. A flow with verified start/end is `quarter` only for a 10-Q duration of 70–125 days, or `annual` only for a 10-K duration of 300–400 days (inclusive day count); YTD/other duration facts stay `unknown` and cannot enter growth/flow-ratio formula cohorts. Missing-start flow facts may remain finite `unknown` disclosures. Fiscal-key conflicts, invalid/ambiguous source matches, non-USD units, non-numeric/non-finite values, invalid ranges, unsupported taxonomies, and rejected filings are counted.
+
+`effective_visible_session` is mapped on the XNYS calendar as the first session strictly **after** `filed_date`; the filing date itself is never visible. Mapping failure is counted and prevents a complete artifact. The output-calendar range remains separate from the expanded effective-session mapping calendar. All events with the same effective session are applied before features for that session are emitted. Amendments remain independent events/versions and start affecting the history only at their own effective session; empty amendments do not delete prior facts. `quality_status` is metadata, not a filter on whether valid finite facts can be used.
+
+`_meta.json.financial_events` records `contract_version="financial_events_v1"`, `complete`, `status`, `empty_reason`, `cik10`, `input_hashes`, `raw_input_inventory`, `raw_input_inventory_sha256`, `input_resource_status`, `input_resource_diagnostics`, `calendar`, `output_calendar`, `quality_counts`, `rejection_counts`, and `events`/`facts` path, sha256, and row counts. Top-level `_meta.json` also records `cik10`, `raw_input_inventory_sha256`, `row_counts.financial_events`/`financial_facts`, and output registrations for both Parquets.
+
+`input_resource_status` has required `manifest`, `submissions`, and `companyfacts` entries. Hard states such as `missing`, `unreadable`, `malformed`, and `unknown` make the artifact incomplete; a confirmed no-CIK/no-input case is represented explicitly and may be complete with schema-correct empty files. Event/fact files are committed atomically, and completion metadata is registered last. The completion identity includes both CIK and raw SEC inventory fingerprint; changed raw resources require reorganization. `rejection_counts` reports diagnostics across raw resource/payload validity, source/date/accession matching, unit/numeric/finite checks, period and fiscal-key conflicts, and effective-session mapping. Individual counter-key names and aggregation are implementation diagnostics, not a stable contract; consumers must not depend on them.
 
 ## 5. ticker→CIK overrides and caching
 
@@ -152,7 +177,7 @@ Mechanics:
 
 ## 7. Parallel organize (`manager._organize_tickers`)
 
-- Completion check `_ticker_is_organized`: `_meta.json` parses, `ticker` matches, and every path in `outputs` exists; if `raw/yahoo/<TICKER>/*.csv` exists then `market.csv` must be in outputs; if the ticker has a CIK (`require_financials`) then `financials.csv` must be in outputs too. Anything missing → re-organize.
+- Completion check `_ticker_is_organized`: `_meta.json` parses, `ticker` matches, and all output paths exist; a ticker with a CIK must have the legacy `financials.csv` and a valid `financial_events_v1` artifact. `artifact_is_valid` checks `complete`, contract version, expected CIK, raw-input inventory fingerprint, fail-closed resource statuses, both Parquet hashes/row counts/schemas, and event/fact relationships. An old meta or CSV alone can never skip the new artifact rebuild.
 - The worker (`_organize_ticker_worker`) first `unlink`s the old `_meta.json` (so a partial state cannot be mistaken for completion), then runs `organize_market` (only logs and returns None when there is no Yahoo CSV) and `organize_financials` (when a CIK exists); the two operations collect errors separately and neither blocks other tickers.
 - `ProcessPoolExecutor(max_workers=workers, initializer=_initialize_organize_worker, initargs=(session_calendar,))`: the session calendar is copied once per process at initialization; workers never construct `exchange_calendars` themselves.
 - Returns and logs `(succeeded, skipped, failed)`; a `failed>0` does not stop other tickers, but the run's final exit code is 1.
@@ -177,20 +202,21 @@ Mechanics:
 
 | What you want to change | Where | What must be updated together |
 |---|---|---|
-| Add a financial concept | `organize_financials._CONCEPTS` (output column → ordered tag tuple) | `tests/test_organize_financials.py::test_financial_concept_priority_whitelist_includes_old_and_new_us_gaap_tags` + one fixture fact; if the sample layer needs a YoY feature, also update `build_samples._FINANCIAL_VALUES` (see [samples.md](samples.md)) |
+| Add a financial concept to the separate organized extract | `organize_financials._CONCEPTS` (output column → ordered tag tuple) | `tests/test_organize_financials.py::test_financial_concept_priority_whitelist_includes_old_and_new_us_gaap_tags` + a fixture fact. `samples` does not consume finance; adding a financial sample feature requires a separate contract decision, not this organizer change. |
 | Add a data-source stage | `manager.STAGES` + a new block in `run_download` + `progress_stages`; CLI `--stage` choices | the new stage's failure counting and progress status; [../user/cli.md](../user/cli.md) (invariant 8) |
 | Add provider configuration | dataclass in `config.py` + `load_sources` fields + `config/sources.toml` | `tests/test_download.py` config tests |
 | Add a ticker→CIK correction | `overrides` in `config/universes/ticker_cik_overrides.json` | `tests/test_ticker_overrides.py`; re-download financials + `--force-rebuild --stage organize` |
 | Exclude a ticker | `config/universes/exclusions_v1.json` (`asset_id`, deduplicated, must be upper-case) | the sample layer's `_load_exclusions` validates duplicates; after rebuilding samples compare manifest `exclusions_applied` |
 
-## 10. Known limitations (measured)
+## 10. Existing organizer limitations (not samples coverage or release metrics)
 
-- **Bank revenue is not on the whitelist**: there is no interest/fee concept (e.g. `InterestAndDividendIncomeOperating`). JPM's full-history `financials.csv` has only **4 sessions** with a non-null `revenue` (old `Revenues` facts from 2010–2011), and the sample layer's `f_raw_revenue_yoy` has only **1 non-null row**; `operating_income` is empty throughout.
-- **XOM has no `OperatingIncomeLoss`**: XOM reports pre-tax income instead (`IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest` and friends), so `operating_income` is empty for its whole history; the first non-null `revenue` report period is FY2011 (see [known-quirks.md](known-quirks.md)).
-- **Tickers without companyfacts**: 183 tickers that have a financials directory receive a 404 from SEC (mostly funds/ETFs/trusts/foreign issuers/structured products); organize still writes an all-missing `financials.csv` (`quality_status=missing`) and does not abort.
-- **No Yahoo bars**: 1,128 tickers have no `market.csv` (SPAC units/warrants/shells); they never enter samples (the sample build only iterates tickers with a market.csv).
-- **Huge filing histories such as JPM's**: JPM's submissions parse into 167,492 filings (77% are 424B2 prospectuses). This is exactly why the `(filed,end)` index + two-pointer scan is required instead of a linear scan over every fact; `_meta.json.row_counts.financials_input` records the count.
-- **BAMLH0A0HYM2 coverage cliff**: the current raw response holds only 794 observations (from 2023-09-25), leaving 732 non-empty sessions after organize; the high macro missingness relates to this. After re-running macros, check the raw file against the manifest first.
+- **Bank concepts remain outside the selected whitelist**: bank-specific interest/fee concepts such as `InterestAndDividendIncomeOperating` are not part of the existing nine-concept extract. The event/fact artifact cannot produce facts outside `_CONCEPTS`. No current samples bank coverage is measured because finance is not a sample input.
+- **The selected whitelist has known issuer/concept gaps**: for example, XOM's selected source lacks `OperatingIncomeLoss`; comparative facts in later filings are not normalized backward into prior event rows. This is an existing organizer limitation, not a samples field or coverage claim; see [known-quirks.md](known-quirks.md).
+- **Missing or confirmed-empty SEC resources**: the existing organizer distinguishes confirmed no-input cases from missing/malformed resources and incomplete mappings. These resource states apply to separate organized financial artifacts; the samples builder does not inspect them.
+- **No Yahoo bars**: a ticker without `market.csv` cannot produce market-based sample rows. No current sample ticker count is asserted here.
+- **Large filing histories**: event volume can vary by issuer. Measure counts and organize resource use from a specifically identified run; no current sample financial-input or runtime measurement is asserted.
+- **Macro-series coverage**: FRED histories differ. Check the relevant raw resource status and manifest before diagnosing an acquisition issue; no current sample missing rate is asserted here.
+- **Input-history boundary**: the existing SEC cache is not a complete historical vintage archive and has no archived filing HTML/iXBRL set. Missing raw facts, later comparative-period facts, non-USD facts, ambiguous matches, and concepts outside the whitelist remain unavailable.
 
 ## 11. How to verify
 
@@ -202,10 +228,13 @@ PYTHONPATH=src .venv/bin/python -m pytest tests/test_download.py tests/test_orga
 # 2) Plan only, write nothing
 PYTHONPATH=src .venv/bin/python -m cli.main download --stage all --start 1990-01-01 --end 2025-12-31 --dry-run
 
-# 3) Single-ticker smoke: no download, rebuild only the AAPL/XOM organized outputs
-PYTHONPATH=src .venv/bin/python -m cli.main download --stage organize --force-rebuild --tickers AAPL,XOM
-# Expect: AAPL financials.csv first non-null revenue report_period_end around 2009-06-27;
-#         XOM first visible revenue row is FY2011 (from 2012-02-27), and operating_income being empty is expected.
+# 3) Existing organizer smoke (only when an organizer task is assigned; not a sample-build step)
+# Reuses raw cache; does not fetch market/financials/macros.
+PYTHONPATH=src .venv/bin/python -m cli.main download --stage organize --force-rebuild \
+  --tickers AMZN,JPM,AAPL,XOM --start 1990-01-01 --end 2025-12-31
+# Inspect the existing financial_events_v1 metadata/hashes and event/fact provenance.
+# AMZN filed_date 2025-08-01 is not visible on 08-01; legacy organizer mapping is next-session based.
+# financials.csv retains its daily whole-snapshot semantics; neither organizer output is a samples input.
 
 # 4) Check provenance / content addressing for any ticker
 .venv/bin/python - <<'PY'

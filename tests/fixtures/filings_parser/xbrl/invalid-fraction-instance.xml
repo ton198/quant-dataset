@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"
+            xmlns:link="http://www.xbrl.org/2003/linkbase"
+            xmlns:xlink="http://www.w3.org/1999/xlink"
+            xmlns:ex="https://example.test/filings"
+            xmlns:iso4217="http://www.xbrl.org/2003/iso4217">
+  <link:schemaRef xlink:type="simple" xlink:href="taxonomy.xsd"/>
+  <xbrli:context id="I1"><xbrli:entity><xbrli:identifier scheme="https://example.test/entity">0000123456</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:instant>2024-01-01</xbrli:instant></xbrli:period></xbrli:context>
+  <xbrli:unit id="USDPerShare"><xbrli:divide><xbrli:unitNumerator><xbrli:measure>iso4217:USD</xbrli:measure></xbrli:unitNumerator><xbrli:unitDenominator><xbrli:measure>xbrli:shares</xbrli:measure></xbrli:unitDenominator></xbrli:divide></xbrli:unit>
+  <ex:Rate contextRef="I1" unitRef="USDPerShare"><xbrli:numerator>1</xbrli:numerator><xbrli:denominator>0</xbrli:denominator></ex:Rate>
+  <ex:TextFact contextRef="MissingContext">text occurrence Arelle cannot expose</ex:TextFact>
+</xbrli:xbrl>

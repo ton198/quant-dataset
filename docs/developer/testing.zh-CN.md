@@ -2,8 +2,10 @@
 
 # testing.md — 测试布局、跑法与验证门槛
 
-> 适用：加/改测试、判断改动能否合并、复现 smoke gate。
+> 适用：加/改测试、判断改动能否合并、复现任务指定的验证。
 > 关联：[AGENT.zh-CN.md](../../AGENT.zh-CN.md) §1 路由表、[download.zh-CN.md](download.zh-CN.md)、[samples.zh-CN.md](samples.zh-CN.md)、[known-quirks.zh-CN.md](known-quirks.zh-CN.md)。
+>
+> **历史证据说明：** 下文的测试数量、skip 和 smoke 判定只描述较早仓库快照，不是当前 `samples` 核验结果。当前样本测试使用独立当前契约 fixtures 与不变式，不使用跨代 projection 或财务校准工具。运行任务指定检查时，使用当前 worktree 中的测试路径。
 
 ## 1. 跑法与基线
 
@@ -13,8 +15,8 @@ PYTHONPATH=src .venv/bin/python -m pytest tests/ -q
 # 等价写法：测试文件自身会把 src/ 插入 sys.path，因此下面也能跑
 .venv/bin/python -m pytest -q
 
-# 单文件
-PYTHONPATH=src .venv/bin/python -m pytest tests/test_build_samples.py -q
+# 单个任务指定测试（将路径替换为当前 worktree 中的实际文件）
+PYTHONPATH=src .venv/bin/python -m pytest tests/<assigned-test-file>.py -q
 PYTHONPATH=src .venv/bin/python -m pytest tests/test_download.py -q -k cli
 ```
 
@@ -27,7 +29,7 @@ PYTHONPATH=src .venv/bin/python -m pytest tests/test_download.py -q -k cli
 
 注意：测试进程不依赖真实 `data/`；只有 `test_load_sources_parses_provider_settings` 与 CLI dry-run 子进程会读仓库的 `config/sources.toml`（无网络）。
 
-## 2. 测试文件地图
+## 2. 历史测试文件地图（仅为早期快照；数量可能已变化）
 
 | 文件 | 数量 | 覆盖 | 代表测试 |
 |---|---|---|---|
@@ -54,14 +56,14 @@ PYTHONPATH=src .venv/bin/python -m pytest tests/test_download.py -q -k cli
 | 约定 | 说明 |
 |---|---|
 | 临时目录 | 一律 `tmp_path`；测试不写仓库 `data/`（唯一例外是只读 `load_sources`） |
-| 构造 fake raw | `test_download._write_market_csv/_bar` 造 Yahoo 形状 CSV；`test_organize_financials._write_company_facts_fixture/_fact` 造 facts+submissions+manifest；`test_build_samples._fixture` 造完整 `organized/`（5 个 ticker：AAA/BBB/CCC/UNIT-WT/DROP + macro + exclusions） |
-| 直接调用内部函数 | 测试有意直接调 `_organize_tickers`、`_submission_rows`、`_financial_features`、`organize_financials` 等，绕过 CLI，便于单点断言 |
+| 构造 fake raw | Download 与 organizer 测试使用本地形状 fixtures；当前样本 fixtures 位于 `tests/fixtures/samples/current/`，包含小型固定输入及独立预期值。 |
+| 直接调用内部函数 | 测试可能直接调用 organizer 或 samples 包 helpers，绕过 CLI 做单点断言；使用当前 imports 与实际文件读取行为，不保留无操作的兼容 helper。 |
 | monkeypatch | 只用于路径与 IO 追踪：`universe.TICKER_CIK_OVERRIDES_PATH`（ticker_overrides）、`Path.read_text` 包装（organize_financials 的“不读无关文件”断言） |
 | 缓存隔离 | 涉及 `_TICKER_CACHE` 的测试用 `_reset_ticker_cache(raw_dir)`（或全清） |
 | 网络 | 零真实请求；`market.fetch_market`/`financials.fetch_financials`/`macros.fetch_macros`/`universe.fetch_universe` 的网络分支**当前无测试覆盖**（见 §6） |
 | 子进程 CLI | `_run_cli` 用 `sys.executable -m cli.main` + 注入 `PYTHONPATH=src`，cwd 固定仓库根，timeout=10s |
 
-## 5. smoke gate（先单点、再全量）
+## 5. 既有数据源 smoke 示例（仅任务指定时运行；不是 samples 发布 gate）
 
 ### 5.1 改财务抽取（`organize_financials.py`）
 
@@ -70,7 +72,7 @@ PYTHONPATH=src .venv/bin/python -m pytest tests/test_download.py -q -k cli
 PYTHONPATH=src .venv/bin/python -m cli.main download --stage organize --force-rebuild --tickers AAPL,XOM
 ```
 
-判定标准（本仓库当前基线）：
+历史 organizer smoke 记录（早期快照；作为当前验收结果前须用当前 fixtures 重新核对）：
 
 | 检查 | 期望 |
 |---|---|
@@ -81,15 +83,20 @@ PYTHONPATH=src .venv/bin/python -m cli.main download --stage organize --force-re
 
 通过后再跑全量 `download --stage all`（或至少对所有 ticker 的 organize）。
 
-### 5.2 改样本逻辑（`build_samples.py`）
+### 5.2 改样本逻辑（`samples.builder`）
 
 ```bash
-PYTHONPATH=src .venv/bin/python -m pytest tests/test_build_samples.py -q
-# 真实验证（可先在小副本上做，见 samples.md §9）
-PYTHONPATH=src .venv/bin/python -m cli.main build-samples
+# 仅运行本次任务指定的当前契约样本测试。
+# 当前测试路径见 tests/；fixtures 位于 tests/fixtures/samples/current/。
+
+# 若任务指定构建候选，必须使用全新路径；不可指向 data/output 或 baseline。
+CANDIDATE_DIR=/tmp/opencode/candidate-samples-finance-free
+test ! -e "$CANDIDATE_DIR" && test ! -L "$CANDIDATE_DIR" || { echo "Choose a new, unused candidate directory" >&2; exit 1; }
+PYTHONPATH=src .venv/bin/python -m cli.main build-samples \
+  --workspace-root "$PWD" --data-dir data/organized --out "$CANDIDATE_DIR"
 ```
 
-判定标准：`manifest.json` 的 `row_counts.samples`、`splits.json` 的 purge 行数、`qc_report.json` 的 `flag_extreme_label_count` 与 [AGENT.zh-CN.md](../../AGENT.zh-CN.md) §2 不变式 5 基线一致（23,938,669 / 120,987+139,158+182,398 / 120,510）——**只动财务特征时必须逐位不变**；schema 仍为 date32 + float32 + uint8（`test_outputs_use_date32_and_float32`）。
+唯一维护的 `samples` 契约不含财务数据：43 raw + 10 CS + 43 MISS = 96 个特征、132 个物理列。当前定向样本测试包括 `tests/test_samples_current_contract.py`、`tests/test_samples_semantic_regression.py`、`tests/test_samples_integrity_regression.py`、`tests/test_samples_safety_regression.py`、`tests/test_query_samples.py`、`tests/test_verification_tools.py`，以及相关的 `tests/test_build_samples.py`；小型 fixtures 位于 `tests/fixtures/samples/current/`。用独立编写预期值的小 fixture 检查标签与边界案例，以及准确 schema/列序/dtype、43 raw 的 `missing_frac`、keys/flags/splits/purge、ticker failure 与财务隔离不变式。按实现核对确定性、输入内容 provenance、strict manifest/output 核验及 workspace/data sibling 路径保护。仅使用全新候选路径；已删除的 projection 工具不是正确性 gate。旧的 735 passed/2 skipped 与归档 projection 仅属历史记录。没有本次指定运行的证据时，不得声称最终 PASS。
 
 ### 5.3 改下载/进度/override
 
@@ -111,7 +118,7 @@ PYTHONPATH=src .venv/bin/python -m cli.main download --stage all --start 1990-01
 | 改 override/force-rebuild | 前向、反向、缺文件回退、CLI flag、完成项强制重建 | 已有模板 |
 | 改进度/锁 | round-trip、force/resume、stale/live/malformed 锁 | 已有模板 |
 | 改行情质量/派生列 | 一个合法 bar + 一个非法 high + negative price + adjustment_factor/return | 已有模板 |
-| 改标签/特征 | `tests/test_build_samples.py` 的 fixture 断言期望值；新增列必须断言 dtype 与 miss 指示 | 已有模板 |
+| 改标签/特征 | `tests/fixtures/samples/current/` 中独立预期值案例；新增列断言 schema/dtype 与 null 指示行为 | 当前契约 fixture suite |
 | 改 purge/splits | 31-session 窗、`rows_by_split` 恒等式、末端 NaN 保留 | 已有模板 |
 | 新增网络下载分支 | **当前空白**：至少补“缓存命中不重下”“manifest 损坏回退”“ragged/非 JSON 报错”的离线测试（monkeypatch urlopen 或注入 fixture 文件） | 待补 |
 | 确定性 | 建议补“同输入重建两次 manifest.outputs 哈希一致”的测试 | 未自动化 |

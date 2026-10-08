@@ -1,12 +1,11 @@
-"""Build the partitioned, point-in-time training sample long table."""
+"""Build the current point-in-time training sample long table."""
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
-import shutil
 import tempfile
+from importlib import metadata
 from pathlib import Path
 from typing import Any
 
@@ -16,56 +15,36 @@ import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
-logger = logging.getLogger(__name__)
+from .contracts import (
+    COLUMN_ORDER,
+    CS_FEATURES,
+    FEATURE_COUNTS,
+    FEATURE_LIST,
+    LABEL_SEMANTICS,
+    LABELS,
+    MACRO_RAW,
+    MACRO_SERIES,
+    MISS_FEATURES,
+    PURGE_SEMANTICS,
+    PURGE_SESSIONS,
+    RAW_FEATURES,
+    SAMPLE_SCHEMA,
+    SCHEMA_VERSION,
+    SPLIT_TRANSITIONS,
+    STOCK_RAW,
+    schema_fingerprint,
+    semantic_contract,
+    semantic_fingerprint,
+)
+from .validation import (
+    sha256_file,
+    validate_fresh_output,
+    validate_manifest,
+    validate_output_hashes,
+    validate_sample_schema,
+)
 
-MACRO_SERIES = (
-    "BAMLH0A0HYM2",
-    "CPIAUCSL",
-    "CPILFESL",
-    "DCOILWTICO",
-    "DEXUSEU",
-    "DGS10",
-    "DGS2",
-    "FEDFUNDS",
-    "PAYEMS",
-    "UNRATE",
-    "VIXCLS",
-)
-MARKET_RAW = (
-    "f_raw_return_1d",
-    "f_raw_return_5d",
-    "f_raw_return_20d",
-    "f_raw_volatility_20",
-    "f_raw_volume_ratio_20",
-    "f_raw_intraday_range",
-)
-DERIVED_RAW = (
-    "f_raw_momentum_60",
-    "f_raw_momentum_120",
-    "f_raw_volatility_60",
-    "f_raw_volume_zscore_60",
-)
-FINANCIAL_RAW = (
-    "f_raw_revenue_yoy",
-    "f_raw_net_income_yoy",
-    "f_raw_operating_income_yoy",
-    "f_raw_assets_yoy",
-    "f_raw_days_since_filing",
-)
-STOCK_RAW = (*MARKET_RAW, *DERIVED_RAW, *FINANCIAL_RAW)
-MACRO_RAW = tuple(
-    feature
-    for series in MACRO_SERIES
-    for feature in (f"f_raw_m_{series}", f"f_raw_m_{series}_d1", f"f_raw_m_{series}_d5")
-)
-RAW_FEATURES = (*STOCK_RAW, *MACRO_RAW)
-CS_FEATURES = tuple(f"f_cs_{name.removeprefix('f_raw_')}" for name in STOCK_RAW)
-MISS_FEATURES = tuple(f"miss_{name.removeprefix('f_raw_')}" for name in RAW_FEATURES)
-LABELS = (
-    *tuple(f"target_return_{horizon}d" for horizon in range(1, 31)),
-    "excess_5d",
-    "excess_21d",
-)
+logger = logging.getLogger(__name__)
 
 _MARKET_REQUIRED = {
     "date",
@@ -80,29 +59,15 @@ _MARKET_REQUIRED = {
     "volume_ratio_20",
     "intraday_range",
 }
-_FINANCIAL_VALUES = ("revenue", "net_income", "operating_income", "assets")
-_PURGE_SESSIONS = 30
-_SPLIT_TRANSITIONS = (
-    ("select", "2019-01-01", "2020-12-31"),
-    ("screen", "2021-01-01", "2024-12-31"),
-    ("reserve", "2025-01-01", None),
-)
-_PURGE_SEMANTICS = (
-    "At each split boundary, rows are excluded at build time when their maximum-horizon label "
-    "would reach the next split: for a 30-session horizon, the 31 signal sessions immediately "
-    "before the boundary are purged because labels enter at t+1 and exit at t+31. "
-    "Only boundaries with canonical sessions in the following split window are purged; rows at "
-    "the dataset end with naturally missing labels are retained."
-)
 
 
 def _purge_windows(
     calendar: pd.DatetimeIndex,
-    purge_sessions: int = _PURGE_SESSIONS,
+    purge_sessions: int = PURGE_SESSIONS,
 ) -> dict[str, dict[str, Any]]:
     """Return canonical-session embargo windows before each populated split boundary."""
     windows: dict[str, dict[str, Any]] = {}
-    for split_name, start, end in _SPLIT_TRANSITIONS:
+    for split_name, start, end in SPLIT_TRANSITIONS:
         boundary_position = int(calendar.searchsorted(pd.Timestamp(start), side="left"))
         if boundary_position == 0 or boundary_position >= len(calendar):
             continue
@@ -137,11 +102,7 @@ def _public_purge_windows(windows: dict[str, dict[str, Any]]) -> dict[str, dict[
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+    return sha256_file(path)[0]
 
 
 def _is_common(asset_id: str) -> bool:
@@ -219,113 +180,9 @@ def _rolling_std(values: np.ndarray, window: int) -> np.ndarray:
     )
 
 
-def _financial_features(path: Path | None, signal_dates: pd.DatetimeIndex) -> dict[str, np.ndarray]:
-    result = {name: np.full(len(signal_dates), np.nan, dtype=np.float32) for name in FINANCIAL_RAW}
-    if path is None or not path.exists() or signal_dates.empty:
-        return result
-
-    frame = pd.read_csv(path)
-    needed = {"available_as_of", "report_period_end", *_FINANCIAL_VALUES}
-    missing = sorted(needed - set(frame.columns))
-    if missing:
-        raise ValueError(f"{path.name} is missing required columns: " + ", ".join(missing))
-    available = pd.to_datetime(frame["available_as_of"], errors="coerce").dt.normalize()
-    frame = frame.loc[available.notna()].copy()
-    if frame.empty:
-        return result
-    frame["_available"] = available.loc[frame.index]
-    frame["_source_order"] = np.arange(len(frame), dtype=np.int64)
-    frame = frame.sort_values(["_available", "_source_order"], kind="mergesort")
-    # Organized financials are daily snapshots. Keep the last snapshot for each
-    # availability date, yielding the filing information actually visible then.
-    frame = frame.drop_duplicates("_available", keep="last").reset_index(drop=True)
-    for column in _FINANCIAL_VALUES:
-        frame[column] = pd.to_numeric(frame[column], errors="coerce")
-    fiscal_year = (
-        pd.to_numeric(frame["fiscal_year"], errors="coerce")
-        if "fiscal_year" in frame
-        else pd.Series(np.nan, index=frame.index, dtype=np.float64)
-    )
-    period = (
-        frame["fiscal_period"].astype("string").str.upper()
-        if "fiscal_period" in frame
-        else pd.Series(pd.NA, index=frame.index, dtype="string")
-    )
-    report_end = pd.to_datetime(frame["report_period_end"], errors="coerce")
-    yoys: dict[str, np.ndarray] = {
-        f"f_raw_{column}_yoy": np.full(len(frame), np.nan, dtype=np.float64)
-        for column in _FINANCIAL_VALUES
-    }
-    fiscal_history: dict[tuple[int, str], int] = {}
-    report_year_history: dict[int, dict[pd.Timestamp, int]] = {}
-    for index, row in frame.iterrows():
-        year_value = fiscal_year.iloc[index]
-        period_value = period.iloc[index]
-        end_value = report_end.iloc[index]
-        has_fiscal_identifiers = pd.notna(year_value) and pd.notna(period_value)
-        prior_index: int | None = None
-        if has_fiscal_identifiers:
-            prior_index = fiscal_history.get((int(year_value) - 1, str(period_value)))
-        elif pd.notna(end_value):
-            prior_target = end_value - pd.DateOffset(years=1)
-            candidates = [
-                (candidate_date, candidate_index)
-                for candidate_date, candidate_index in report_year_history.get(
-                    int(end_value.year) - 1, {}
-                ).items()
-                if abs((candidate_date - prior_target).days) <= 15
-            ]
-            if candidates:
-                _, prior_index = min(
-                    candidates,
-                    key=lambda candidate: (
-                        abs((candidate[0] - prior_target).days),
-                        candidate[0],
-                    ),
-                )
-
-        if prior_index is not None:
-            prior = frame.iloc[prior_index]
-            for column in _FINANCIAL_VALUES:
-                current_value = row[column]
-                prior_value = prior[column]
-                if pd.notna(current_value) and pd.notna(prior_value) and prior_value != 0:
-                    yoys[f"f_raw_{column}_yoy"][index] = current_value / prior_value - 1.0
-
-        if has_fiscal_identifiers:
-            fiscal_history[(int(year_value), str(period_value))] = index
-        if pd.notna(end_value) and row[list(_FINANCIAL_VALUES)].notna().any():
-            report_year_history.setdefault(int(end_value.year), {})[end_value] = index
-
-    positions = (
-        np.searchsorted(
-            frame["_available"].to_numpy(dtype="datetime64[ns]"),
-            signal_dates.to_numpy(dtype="datetime64[ns]"),
-            side="right",
-        )
-        - 1
-    )
-    visible = positions >= 0
-    mapped = {
-        "f_raw_revenue_yoy": yoys["f_raw_revenue_yoy"],
-        "f_raw_net_income_yoy": yoys["f_raw_net_income_yoy"],
-        "f_raw_operating_income_yoy": yoys["f_raw_operating_income_yoy"],
-        "f_raw_assets_yoy": yoys["f_raw_assets_yoy"],
-    }
-    for feature, values in mapped.items():
-        target = result[feature]
-        target[visible] = values[positions[visible]].astype(np.float32)
-    available_ns = frame["_available"].to_numpy(dtype="datetime64[ns]")
-    signal_ns = signal_dates.to_numpy(dtype="datetime64[ns]")
-    days = (signal_ns[visible] - available_ns[positions[visible]]) / np.timedelta64(1, "D")
-    result["f_raw_days_since_filing"][visible] = days.astype(np.float32)
-    return result
-
-
 def _ticker_samples(
     asset_id: str,
     market_path: Path,
-    financial_path: Path | None,
     calendar: pd.DatetimeIndex,
     macro: pd.DataFrame,
     is_common: bool,
@@ -407,7 +264,6 @@ def _ticker_samples(
         where=np.isfinite(volume_std) & (volume_std > 0),
     )
     raw["f_raw_volume_zscore_60"] = volume_z[positions].astype(np.float32)
-    raw.update(_financial_features(financial_path, pd.DatetimeIndex(sample_source["date"])))
 
     for feature in RAW_FEATURES:
         if feature in MACRO_RAW:
@@ -538,23 +394,27 @@ def _arrow_table(frame: pd.DataFrame) -> pa.Table:
     dates = pa.array(frame["date"].dt.date, type=pa.date32())
     without_date = frame.drop(columns="date")
     table = pa.Table.from_pandas(without_date, preserve_index=False)
-    return table.add_column(0, "date", dates)
+    table = table.add_column(0, "date", dates).cast(SAMPLE_SCHEMA)
+    validate_sample_schema(table.schema)
+    return table
 
 
 def _clean_outputs(output: Path) -> None:
-    samples = output / "samples"
-    if samples.exists():
-        shutil.rmtree(samples)
-    for stale_stage in output.glob("samples-stage-*"):
-        if stale_stage.is_dir():
-            shutil.rmtree(stale_stage)
+    """Create output structure only for a fresh destination; never remove user files."""
+    if output.exists():
+        if not output.is_dir():
+            raise ValueError(f"output directory must be a fresh empty directory: {output}")
+        try:
+            next(output.iterdir())
+        except StopIteration:
+            pass
         else:
-            stale_stage.unlink()
-    for name in ("meta.parquet", "manifest.json", "splits.json", "qc_report.md", "qc_report.json"):
-        path = output / name
-        if path.exists():
-            path.unlink()
-    samples.mkdir(parents=True, exist_ok=True)
+            raise ValueError(
+                f"output directory must be fresh and empty; choose a new --out path: {output}"
+            )
+    else:
+        output.mkdir(parents=True)
+    (output / "samples").mkdir()
 
 
 def _write_json(path: Path, value: Any) -> None:
@@ -623,11 +483,71 @@ def _hash_output_files(
         elif path.name == "meta.parquet":
             row_count = meta_rows
         records[relative] = {
-            "sha256": _sha256(path),
+            "sha256": sha256_file(path)[0],
             "rows": row_count,
             "bytes": path.stat().st_size,
         }
     return records
+
+
+def _display_input_path(path: Path, base: Path, prefix: str) -> str:
+    try:
+        return f"{prefix}/{path.resolve().relative_to(base.resolve()).as_posix()}"
+    except ValueError:
+        return f"external/{path.name}"
+
+
+def _capture_input_provenance(
+    exclusions_path: Path,
+    macro_path: Path,
+    market_paths: list[Path],
+    workspace_root: Path,
+    organized: Path,
+    exclusions_digest: tuple[str, int] | None = None,
+) -> list[dict[str, Any]]:
+    specifications: list[tuple[str, Path, Path, str]] = [
+        ("exclusions", exclusions_path, workspace_root, "workspace"),
+        ("macro", macro_path, organized, "organized"),
+    ]
+    specifications.extend(("market", path, organized, "organized") for path in market_paths)
+    records = []
+    for role, path, base, prefix in specifications:
+        digest, byte_count = (
+            exclusions_digest
+            if role == "exclusions" and exclusions_digest is not None
+            else sha256_file(path)
+        )
+        records.append(
+            {
+                "role": role,
+                "path": _display_input_path(path, base, prefix),
+                "sha256": digest,
+                "bytes": byte_count,
+            }
+        )
+    return sorted(records, key=lambda item: (item["role"], item["path"]))
+
+
+def _code_identity() -> dict[str, Any]:
+    package_dir = Path(__file__).parent
+    files = {
+        "samples/__init__.py": package_dir / "__init__.py",
+        "samples/builder.py": Path(__file__),
+        "samples/contracts.py": package_dir / "contracts.py",
+        "samples/query.py": package_dir / "query.py",
+        "samples/validation.py": package_dir / "validation.py",
+    }
+    hashes = {}
+    for name, path in sorted(files.items()):
+        digest, byte_count = sha256_file(path)
+        hashes[name] = {"sha256": digest, "bytes": byte_count}
+    dependencies: dict[str, str | None] = {}
+    for distribution in ("numpy", "pandas", "pyarrow"):
+        try:
+            dependencies[distribution] = metadata.version(distribution)
+        except metadata.PackageNotFoundError:
+            dependencies[distribution] = None
+    return {"files": hashes, "dependencies": dependencies}
 
 
 def build_samples(
@@ -635,6 +555,7 @@ def build_samples(
     output_dir: str | Path,
     exclusions_file: str | Path | None = None,
     *,
+    workspace_root: str | Path | None = None,
     canonical_min_tickers: int = 500,
     rank_batch_sessions: int = 40,
     staging_tickers: int = 50,
@@ -644,9 +565,22 @@ def build_samples(
     ``data_dir`` points to the organized directory containing ``stocks/`` and
     ``shared/macro.csv``. Processing is streamed per ticker, with temporary
     bounded ticker batches used to calculate date-level cross-sectional ranks.
+    ``workspace_root`` anchors the default exclusions resource and protected data paths.
     """
-    organized = Path(data_dir)
-    output = Path(output_dir)
+    current_directory = Path.cwd()
+    workspace = (
+        Path(workspace_root).expanduser() if workspace_root is not None else current_directory
+    )
+    if not workspace.is_absolute():
+        workspace = current_directory / workspace
+    workspace = workspace.resolve(strict=False)
+
+    organized_arg = Path(data_dir).expanduser()
+    if not organized_arg.is_absolute():
+        organized_arg = current_directory / organized_arg
+    organized = organized_arg.resolve(strict=False)
+    output = validate_fresh_output(output_dir, organized, workspace)
+
     stocks_dir = organized / "stocks"
     macro_path = organized / "shared" / "macro.csv"
     if not stocks_dir.is_dir():
@@ -657,12 +591,22 @@ def build_samples(
         raise ValueError("canonical_min_tickers must be a positive integer")
     if rank_batch_sessions < 1 or staging_tickers < 1:
         raise ValueError("rank_batch_sessions and staging_tickers must be positive")
+
     if exclusions_file is None:
-        exclusions_path = (
-            Path(__file__).resolve().parents[1] / "config" / "universes" / "exclusions_v1.json"
-        )
+        exclusions_path = workspace / "config" / "universes" / "exclusions_v1.json"
     else:
-        exclusions_path = Path(exclusions_file)
+        exclusions_path = Path(exclusions_file).expanduser()
+        if not exclusions_path.is_absolute():
+            exclusions_path = current_directory / exclusions_path
+    exclusions_path = exclusions_path.resolve(strict=False)
+    if not exclusions_path.is_file():
+        if exclusions_file is None:
+            raise FileNotFoundError(
+                f"default exclusions file is missing: {exclusions_path}; "
+                "provide --exclusions-file to select an explicit file"
+            )
+        raise FileNotFoundError(f"exclusions file does not exist: {exclusions_path}")
+    exclusions_record, exclusions_bytes = sha256_file(exclusions_path)
     exclusions = _load_exclusions(exclusions_path)
     exclusion_set = set(exclusions)
 
@@ -672,11 +616,21 @@ def build_samples(
     missing_market_ticker_ids = sorted(set(stock_directories) - market_ticker_ids - exclusion_set)
     if not ticker_paths:
         raise ValueError(f"no stock market.csv files found under {stocks_dir}")
+    if sha256_file(exclusions_path) != (exclusions_record, exclusions_bytes):
+        raise ValueError("exclusions file changed while it was being loaded")
+    market_paths_for_provenance = [
+        path for path in ticker_paths if path.parent.name.upper() not in exclusion_set
+    ]
+    input_provenance = _capture_input_provenance(
+        exclusions_path,
+        macro_path,
+        market_paths_for_provenance,
+        workspace,
+        organized,
+        (exclusions_record, exclusions_bytes),
+    )
     ticker_map: dict[str, Path] = {}
     discovered_asset_ids = {path.parent.name.upper() for path in ticker_paths}
-    financial_ticker_count = sum(
-        (path.parent / "financials.csv").is_file() for path in ticker_paths
-    )
     first_pass_errors: list[dict[str, str]] = []
     date_counts: dict[pd.Timestamp, int] = {}
     common_tickers = 0
@@ -734,6 +688,7 @@ def build_samples(
     pre_purge_split_rows = {name: 0 for name in split_names}
     purge_rows_by_split = {name: 0 for name in split_names}
     missing_counts = {column: 0 for column in (*RAW_FEATURES, *CS_FEATURES, *MISS_FEATURES)}
+
     total_rows = 0
     cross_section_counts: dict[pd.Timestamp, int] = {}
     extreme_return_count = 0
@@ -748,12 +703,10 @@ def build_samples(
                 for asset_id, market_path in ticker_items[
                     batch_start : batch_start + staging_tickers
                 ]:
-                    financial_path = market_path.with_name("financials.csv")
                     try:
                         frame = _ticker_samples(
                             asset_id,
                             market_path,
-                            financial_path if financial_path.is_file() else None,
                             calendar,
                             macro,
                             _is_common(asset_id),
@@ -865,11 +818,14 @@ def build_samples(
                         .head(100 - len(extreme_examples))
                         .itertuples(index=False)
                     ):
+                        target_return_1d = float(row.target_return_1d)
+                        if not np.isfinite(target_return_1d):
+                            target_return_1d = None
                         extreme_examples.append(
                             {
                                 "date": row.date.strftime("%Y-%m-%d"),
                                 "asset_id": row.asset_id,
-                                "target_return_1d": float(row.target_return_1d),
+                                "target_return_1d": target_return_1d,
                             }
                         )
 
@@ -941,8 +897,8 @@ def build_samples(
         "select": ["2019-01-01", "2020-12-31"],
         "screen": ["2021-01-01", "2024-12-31"],
         "reserve": ["2025-01-01", data_end],
-        "purge_sessions": _PURGE_SESSIONS,
-        "purge_semantics": _PURGE_SEMANTICS,
+        "purge_sessions": PURGE_SESSIONS,
+        "purge_semantics": PURGE_SEMANTICS,
         "purged_windows": public_purge_windows,
         "rows_by_split": {
             name: {
@@ -980,8 +936,8 @@ def build_samples(
         "missingness_per_feature": missingness,
         "cross_section_size_per_year": year_cross_sections,
         "purge": {
-            "purge_sessions": _PURGE_SESSIONS,
-            "semantics": _PURGE_SEMANTICS,
+            "purge_sessions": PURGE_SESSIONS,
+            "semantics": PURGE_SEMANTICS,
             "rows_by_split": splits["rows_by_split"],
         },
         "extreme_labels": {
@@ -1084,11 +1040,42 @@ def build_samples(
         lines.append("- None")
     (output / "qc_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    feature_list = [*RAW_FEATURES, *CS_FEATURES, *MISS_FEATURES]
+    feature_list = list(FEATURE_LIST)
+    actual_layout = (
+        len(RAW_FEATURES),
+        len(CS_FEATURES),
+        len(MISS_FEATURES),
+        len(feature_list),
+        len(COLUMN_ORDER),
+    )
+    if actual_layout != (43, 10, 43, 96, 132):
+        raise AssertionError(f"current feature layout mismatch: {actual_layout}")
+    if len(feature_list) != len(set(feature_list)):
+        raise AssertionError("feature registry contains duplicate names")
+    feature_counts = dict(FEATURE_COUNTS)
+
+    if (
+        _capture_input_provenance(
+            exclusions_path,
+            macro_path,
+            market_paths_for_provenance,
+            workspace,
+            organized,
+        )
+        != input_provenance
+    ):
+        raise ValueError("consumed input changed during sample build; manifest was not published")
+
+    for sample_path in sorted((output / "samples").rglob("*.parquet")):
+        validate_sample_schema(pq.read_schema(sample_path))
     output_files = _hash_output_files(output, year_rows, len(meta))
     manifest = {
-        "schema_version": "samples_v1",
+        "schema_version": SCHEMA_VERSION,
         "outputs": output_files,
+        "semantic_contract": semantic_contract(),
+        "semantic_fingerprint": semantic_fingerprint(),
+        "schema_fingerprint": schema_fingerprint(),
+        "code_identity": _code_identity(),
         "row_counts": {"samples": total_rows, "meta": len(meta), "by_year": qc["rows_per_year"]},
         "date_range": {"start": data_start, "end": data_end},
         "feature_list": feature_list,
@@ -1101,16 +1088,9 @@ def build_samples(
                 raw: miss for raw, miss in zip(RAW_FEATURES, MISS_FEATURES, strict=True)
             },
             "macro_differences": "d1 and d5 are exact positional differences on the canonical date axis; no forward-fill",
+            "registry_counts": feature_counts,
         },
-        "label_semantics": (
-            "For signal session t, entry is adjusted open at canonical session t+1 and exit for horizon h is "
-            "adjusted open at canonical session t+1+h. adjusted_open = open * adj_close / close; "
-            "target_return_hd = adjusted_open(t+1+h) / adjusted_open(t+1) - 1. Horizons are positional "
-            "canonical-session offsets; exact entry and exit bars must exist and be positive/finite, with no "
-            "substitution, forward-fill, or intermediate-bar requirement. Primary future-model targets are "
-            "excess_5d and excess_21d; other target_return horizons are auxiliary. Because SPY is absent, "
-            "excess returns subtract the same-date equal-weight mean target among is_common stocks."
-        ),
+        "label_semantics": LABEL_SEMANTICS,
         "build_params": {
             "canonical_axis_rule": "absolute floor: dates with >= canonical_min_tickers is_common tickers present",
             "canonical_min_tickers": canonical_min_tickers,
@@ -1122,9 +1102,8 @@ def build_samples(
             "parquet_compression": "snappy",
             "sample_partitioning": "samples/year=YYYY/part-00000.parquet",
             "derived_windows": "60 and 120 canonical sessions; past/current data only",
-            "financial_asof": "latest available_as_of <= signal date; year-over-year compares the same fiscal_period in fiscal_year - 1 when identifiers exist, otherwise the nearest report-period end in the prior report year within 15 calendar days of the date one year earlier (closest match, ties choose earlier period-end)",
-            "purge_sessions": _PURGE_SESSIONS,
-            "purge_semantics": _PURGE_SEMANTICS,
+            "purge_sessions": PURGE_SESSIONS,
+            "purge_semantics": PURGE_SEMANTICS,
             "rows_by_split": splits["rows_by_split"],
         },
         "data_quality_flags": {
@@ -1144,23 +1123,32 @@ def build_samples(
             "is_common is a suffix heuristic; it does not replace security-master classification.",
         ],
         "exclusions_applied": {
-            "file": str(exclusions_path),
+            "file": next(
+                record["path"] for record in input_provenance if record["role"] == "exclusions"
+            ),
             "asset_ids": exclusions,
             "dropped_asset_ids_present": sorted(exclusion_set.intersection(discovered_asset_ids)),
         },
+        "input_provenance": {
+            "complete": True,
+            "hashing": "streamed sha256 and byte counts; input hashes rechecked before manifest publication",
+            "files": input_provenance,
+        },
         "input_inventory": {
+            "scope": "counts only; not a complete content inventory",
             "stock_directories": len(stock_directories),
-            "market_ticker_files": len(ticker_paths),
+            "market_ticker_files_discovered": len(ticker_paths),
+            "market_files_in_content_provenance": len(market_paths_for_provenance),
             "directories_without_market_csv": len(missing_market_ticker_ids),
             "tickers_without_market_csv": missing_market_ticker_ids,
-            "financial_ticker_files": financial_ticker_count,
-            "financial_features_missing_for_universe": financial_ticker_count == 0,
             "calendar_denominator_scope": "is_common tickers with market.csv files, excluding explicit exclusions",
         },
         "is_common_column": "Rows whose ticker suffix heuristically indicates units, warrants, preferreds, or rights are retained with is_common=false; all rows remain eligible for cross-sectional feature ranks.",
         "benchmark": "No SPY exists in the organized data; excess_5d and excess_21d subtract the same-day equal-weight is_common-stock target mean.",
         "manifest_hash_note": "manifest.json is omitted from its own outputs hash map to avoid a self-referential hash.",
     }
+    validate_manifest(manifest)
+    validate_output_hashes(output, manifest)
     _write_json(output / "manifest.json", manifest)
     logger.info("Built %s sample rows from %s through %s", total_rows, data_start, data_end)
     return {

@@ -1,0 +1,13 @@
+{
+  "directory": {
+    "name": "/Archives/edgar/data/1/000000000124000001/",
+    "item": [
+      {"name": "annual.htm", "type": "text", "size": "110"},
+      {"name": "issuer.xsd", "type": "text", "size": "72"},
+      {"name": "issuer_cal.xml", "type": "text", "size": "41"},
+      {"name": "ex31.htm", "type": "EX-31.1", "size": "18"},
+      {"name": "logo.gif", "type": "image/gif", "size": "12"},
+      {"name": "press-release.pdf", "type": "application/pdf", "size": "15"}
+    ]
+  }
+}

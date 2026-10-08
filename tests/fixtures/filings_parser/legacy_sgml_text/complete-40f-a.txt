@@ -1,0 +1,39 @@
+<DOCUMENT>
+<TYPE>40-F/A
+<SEQUENCE>1
+<FILENAME>may3002_40fa.txt
+<TEXT>
+
+                    U.S. SECURITIES AND EXCHANGE COMMISSION
+                             WASHINGTON, D.C. 20549
+
+                                  FORM 40-F/A
+
+          [ ] ANNUAL REPORT PURSUANT TO SECTION 13(a) OR 15(d)
+
+<PAGE>
+
+The registrant filed the following annual information.
+
+<TABLE>
+<S>Registrant<C>Incorporation<C>Financial statements
+<S>Example Railway<C>Canada<C>See audited statements below
+</TABLE>
+
+<PAGE>
+
+INDEPENDENT AUDITORS' REPORT
+
+The accompanying financial statements and notes are included in this report.
+
+<TABLE>
+<S>Fiscal year<C>Revenue<C>Notes
+<S>2001<C>One hundred<C>See note 7
+</TABLE>
+
+SIGNATURES
+
+[ ] Financial statements are incorporated by reference where indicated.
+
+</TEXT>
+</DOCUMENT>

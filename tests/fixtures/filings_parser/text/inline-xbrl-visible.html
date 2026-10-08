@@ -1,0 +1,45 @@
+<!doctype html>
+<html xmlns:ix="http://www.xbrl.org/2013/inlineXBRL"
+      xmlns:inline="http://www.xbrl.org/2008/inlineXBRL">
+<head><title>Annual Filing Text</title></head>
+<body>
+<header>Human Visible Report Header</header>
+<ix:header>
+  <ix:resources>
+    <ix:context id="machine-context">
+      <ix:entity><ix:identifier>MachineEntitySentinel</ix:identifier></ix:entity>
+      <ix:period><ix:endDate>2099-12-31</ix:endDate></ix:period>
+    </ix:context>
+    <ix:unit id="machine-unit"><ix:measure>MachineUnitSentinel</ix:measure></ix:unit>
+  </ix:resources>
+  <ix:references>MachineReferencesSentinel</ix:references>
+</ix:header>Human Header Tail Retained
+<inline:header>
+  <inline:resources>
+    <inline:context id="alternate-machine-context">
+      <inline:entity><inline:identifier>AlternateMachineEntitySentinel</inline:identifier></inline:entity>
+      <inline:period><inline:startDate>2098-01-01</inline:startDate></inline:period>
+    </inline:context>
+    <inline:unit id="alternate-machine-unit">
+      <inline:measure>AlternateMachineUnitSentinel</inline:measure>
+    </inline:unit>
+  </inline:resources>
+  <inline:references>AlternateMachineReferencesSentinel</inline:references>
+</inline:header>Alternate Header Tail Retained
+<main>
+  <h1>Financial Highlights</h1>
+  <p>Visible revenue <ix:nonFraction name="ex:Revenue" contextRef="c" unitRef="u">1,234</ix:nonFraction> USD.</p>
+  <p>Visible narrative <ix:nonNumeric name="ex:Comment" contextRef="c">Management discussion retained</ix:nonNumeric>.</p>
+  <p>Visible ratio <ix:fraction name="ex:Ratio" contextRef="c" unitRef="u"><ix:numerator>3</ix:numerator> over <ix:denominator>4</ix:denominator></ix:fraction>.</p>
+  <div><ix:tuple name="ex:Record"><ix:nonNumeric name="ex:Label">Visible tuple value retained</ix:nonNumeric></ix:tuple></div>
+  <table>
+    <tr><th>Visible table metric</th><th>Visible table value</th></tr>
+    <tr><td>Revenue</td><td>1,234 USD</td></tr>
+  </table>
+  <ix:hidden><ix:nonNumeric name="ex:Hidden">MachineHiddenFactSentinel</ix:nonNumeric></ix:hidden>Hidden Fact Tail Retained
+  <p hidden>HiddenAttributeSentinel</p>Hidden Attribute Tail Retained
+  <p style="DISPLAY : NONE">HiddenCssSentinel</p>Hidden CSS Tail Retained
+  <p style="display: BLOCK !important">Visible Important Style Retained</p>
+</main>
+</body>
+</html>

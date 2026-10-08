@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import re
+import tempfile
+from collections import Counter
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -377,36 +381,268 @@ def _submission_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return filings
 
 
-def _owned_paths(root: Path, cik10: str) -> list[Path]:
-    try:
-        manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        manifest = {}
-    entries = manifest.get("resources", []) if isinstance(manifest, dict) else []
-    if isinstance(entries, dict):
-        entries = [
-            {"logical_key": key, **record}
-            for key, versions in entries.items()
-            for record in (versions if isinstance(versions, list) else [versions])
-            if isinstance(record, dict)
+def _canonical_cik(value: str) -> str | None:
+    value = value.strip()
+    if value.upper().startswith("CIK"):
+        value = value[3:]
+    if not value.isdigit():
+        return None
+    canonical = value.lstrip("0") or "0"
+    return canonical if len(canonical) <= 10 else None
+
+
+def _logical_key_cik(logical_key: str) -> str | None:
+    """Parse the CIK field, never treating a numeric suffix as identity."""
+    fields = logical_key.split(":")
+    if len(fields) < 2:
+        return None
+    return _canonical_cik(fields[1])
+
+
+def _resource_kind(logical_key: str, path: str = "") -> str:
+    identity = f"{logical_key} {path}".casefold()
+    if "companyfacts" in identity:
+        return "companyfacts"
+    if "submissions-page" in identity:
+        return "submission_page"
+    if "submission" in identity:
+        return "submissions"
+    return "unknown"
+
+
+def _owned_resource_entries(
+    root: Path, cik10: str
+) -> tuple[list[tuple[Path, str, str, str]], str, dict[str, int]]:
+    """Return CIK-owned references and fail-closed manifest diagnostics."""
+    target = _canonical_cik(str(cik10))
+    if target is None:
+        return [], "malformed", {"invalid_cik": 1}
+
+    manifest_path = root / "manifest.json"
+    manifest_status = "unknown"
+    manifest_rejections: Counter[str] = Counter()
+    selected: list[tuple[Path, str, str, str]] = []
+    manifest_logical_key_count = 0
+    matched_logical_key_count = 0
+    if manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeDecodeError):
+            manifest = None
+            manifest_status = "unreadable"
+        else:
+            if not isinstance(manifest, dict):
+                manifest_status = "malformed"
+                manifest_rejections["malformed_raw_manifest"] += 1
+            elif "resources" not in manifest:
+                manifest_status = "malformed"
+                manifest_rejections["manifest_missing_resources"] += 1
+            else:
+                raw_resources = manifest["resources"]
+                if isinstance(raw_resources, list):
+                    manifest_entries = raw_resources
+                elif isinstance(raw_resources, dict):
+                    manifest_entries = []
+                    for logical_key, versions in raw_resources.items():
+                        if not isinstance(logical_key, str) or not logical_key.strip():
+                            manifest_status = "malformed"
+                            manifest_rejections["manifest_resource_missing_logical_key"] += 1
+                            continue
+                        manifest_logical_key_count += 1
+                        if _logical_key_cik(logical_key) == target:
+                            matched_logical_key_count += 1
+                        if isinstance(versions, dict):
+                            version_records = [versions]
+                        elif isinstance(versions, list):
+                            version_records = versions
+                        else:
+                            manifest_status = "malformed"
+                            manifest_rejections["manifest_resource_record_not_object"] += 1
+                            continue
+                        for record in version_records:
+                            if not isinstance(record, dict):
+                                manifest_status = "malformed"
+                                manifest_rejections["manifest_resource_record_not_object"] += 1
+                                continue
+                            # A dict-keyed manifest carries logical_key outside
+                            # the record; the key is authoritative if duplicated.
+                            manifest_entries.append({**record, "logical_key": logical_key})
+                else:
+                    manifest_status = "malformed"
+                    manifest_rejections["manifest_resources_not_list"] += 1
+                    manifest_entries = []
+
+                if manifest_status != "malformed":
+                    manifest_status = "ok"
+                for entry in manifest_entries:
+                    if not isinstance(entry, dict):
+                        manifest_status = "malformed"
+                        manifest_rejections["manifest_resource_record_not_object"] += 1
+                        continue
+                    logical_key = entry.get("logical_key")
+                    if not isinstance(logical_key, str) or not logical_key.strip():
+                        manifest_status = "malformed"
+                        manifest_rejections["manifest_resource_missing_logical_key"] += 1
+                        continue
+                    if isinstance(raw_resources, list):
+                        manifest_logical_key_count += 1
+                        if _logical_key_cik(logical_key) == target:
+                            matched_logical_key_count += 1
+                    if "path" not in entry or not isinstance(entry["path"], str) or not entry["path"]:
+                        manifest_status = "malformed"
+                        manifest_rejections["manifest_resource_invalid_path"] += 1
+                        continue
+                    if "sha256" in entry and not isinstance(entry["sha256"], str):
+                        manifest_status = "malformed"
+                        manifest_rejections["manifest_resource_invalid_sha256"] += 1
+                        continue
+                    if _logical_key_cik(logical_key) != target:
+                        continue
+                    raw_path = entry["path"]
+                    path = root / raw_path
+                    selected.append(
+                        (
+                            path,
+                            _resource_kind(logical_key, raw_path),
+                            logical_key,
+                            "ok" if path.is_file() else "missing",
+                        )
+                    )
+
+    if not selected and root.exists() and manifest_status not in {"unreadable", "malformed"}:
+        filename_pattern = re.compile(
+            rf"(?<![0-9])0*{re.escape(str(int(target)))}(?![0-9])"
+        )
+        for path in sorted(root.glob("*.json")):
+            kind = _resource_kind("", path.name)
+            if (
+                path.name != "manifest.json"
+                and kind in {"companyfacts", "submissions", "submission_page"}
+                and filename_pattern.search(path.name)
+            ):
+                selected.append((path, kind, "", "ok"))
+    if manifest_status == "ok" and manifest_logical_key_count and not matched_logical_key_count and not selected:
+        manifest_rejections["no_cik_owned_resources"] += 1
+    elif manifest_status == "ok" and matched_logical_key_count and not selected:
+        manifest_rejections["empty_cik_resource_versions"] += 1
+
+    # Keep distinct logical references for the raw inventory, but avoid scanning
+    # and hashing a shared payload more than once.
+    selected.sort(key=lambda item: (str(item[0]), item[1], item[2]))
+    return selected, manifest_status, dict(manifest_rejections)
+
+
+def _raw_input_inventory(
+    root: Path, cik10: str | None
+) -> tuple[
+    list[dict[str, Any]], str, str, list[Path], dict[Path, str], dict[Path, set[str]], dict[str, int]
+]:
+    from .financial_events import inventory_fingerprint, normalize_cik
+
+    normalized_cik = normalize_cik(cik10)
+    if normalized_cik is None:
+        if cik10 is None or str(cik10).strip() == "":
+            inventory = [{"kind": "no_cik", "path": None, "status": "no_cik", "sha256": None}]
+            return inventory, inventory_fingerprint(None, inventory), "no_cik", [], {}, {}, {}
+        inventory = [
+            {
+                "kind": "invalid_cik",
+                "cik_input": str(cik10),
+                "path": None,
+                "status": "malformed",
+                "sha256": None,
+            }
         ]
-    paths = {
-        str(entry.get("path", ""))
-        for entry in entries
-        if isinstance(entry, dict)
-        and (
-            str(entry.get("logical_key", "")).endswith(cik10)
-            or f":{cik10}:" in str(entry.get("logical_key", ""))
+        return (
+            inventory,
+            inventory_fingerprint(None, inventory),
+            "malformed",
+            [],
+            {},
+            {},
+            {"invalid_cik": 1},
         )
-    }
-    result = sorted(root / item for item in paths if item and (root / item).is_file())
-    if not result and root.exists():
-        result = sorted(
-            path
-            for path in root.glob("*.json")
-            if path.name != "manifest.json" and cik10 in path.name
-        )
-    return result
+
+    entries, manifest_status, manifest_rejections = _owned_resource_entries(root, normalized_cik)
+    manifest_path = root / "manifest.json"
+    try:
+        manifest_sha256 = _sha256(manifest_path) if manifest_path.is_file() else None
+    except OSError:
+        manifest_sha256 = None
+    by_path: dict[Path, list[tuple[str, str, str]]] = {}
+    for path, kind, logical_key, status in entries:
+        by_path.setdefault(path, []).append((kind, logical_key, status))
+    inventory: list[dict[str, Any]] = [
+        {
+            "kind": "manifest",
+            "path": "manifest.json" if manifest_path.is_file() else None,
+            "status": manifest_status,
+            "sha256": manifest_sha256,
+        }
+    ]
+    input_hashes: dict[Path, str] = {}
+    expected_types: dict[Path, set[str]] = {}
+    for path in sorted(by_path):
+        refs = by_path[path]
+        status = next((item[2] for item in refs if item[2] != "ok"), "ok")
+        digest = None
+        if status == "ok":
+            try:
+                digest = _sha256(path)
+            except OSError:
+                status = "unreadable"
+        if digest is not None:
+            input_hashes[path] = digest
+        expected_types[path] = {kind for kind, _, _ in refs if kind != "unknown"}
+        for kind, logical_key, _ in refs:
+            inventory.append(
+                {
+                    "kind": kind,
+                    "logical_key": logical_key or None,
+                    "path": str(path.relative_to(root)) if path.is_relative_to(root) else str(path),
+                    "status": status,
+                    "sha256": digest,
+                }
+            )
+    if not entries:
+        inventory.append({"kind": "raw_inputs", "path": None, "status": "no_input", "sha256": None})
+    inventory.sort(key=lambda item: (str(item.get("path")), str(item.get("kind")), str(item.get("logical_key"))))
+    fingerprint = inventory_fingerprint(normalized_cik, inventory)
+    return (
+        inventory,
+        fingerprint,
+        manifest_status,
+        sorted(input_hashes),
+        input_hashes,
+        expected_types,
+        manifest_rejections,
+    )
+
+
+def raw_input_inventory(
+    raw_dir: Path, cik10: str | None
+) -> tuple[list[dict[str, Any]], str, dict[str, str]]:
+    inventory, fingerprint, manifest_status, _, _, _, _ = _raw_input_inventory(
+        raw_dir / "sec" / "financials", cik10
+    )
+    statuses = {"manifest": manifest_status, "submissions": "no_input", "companyfacts": "no_input"}
+    for entry in inventory:
+        kind = entry.get("kind")
+        status_kind = "submissions" if kind == "submission_page" else kind
+        if status_kind in {"submissions", "companyfacts"} and entry.get("status") in {
+            "missing", "unreadable", "malformed"
+        }:
+            statuses[status_kind] = entry["status"]
+        elif status_kind in {"submissions", "companyfacts"} and entry.get("status") == "ok":
+            statuses[status_kind] = "ok"
+    return inventory, fingerprint, statuses
+
+
+def _owned_paths(root: Path, cik10: str) -> list[Path]:
+    if _canonical_cik(str(cik10)) is None:
+        return []
+    entries, _, _ = _owned_resource_entries(root, cik10)
+    return sorted({path for path, _, _, status in entries if status == "ok" and path.is_file()})
 
 
 def _write_meta(
@@ -455,7 +691,80 @@ def _write_meta(
         }
     )
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    try:
+        temporary.write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _valid_companyfacts_payload(payload: dict[str, Any]) -> bool:
+    facts = payload.get("facts")
+    if not isinstance(facts, dict):
+        return False
+    for taxonomy_data in facts.values():
+        if not isinstance(taxonomy_data, dict):
+            return False
+        for tag_data in taxonomy_data.values():
+            if not isinstance(tag_data, dict) or "units" not in tag_data:
+                return False
+            units = tag_data["units"]
+            if not isinstance(units, dict):
+                return False
+            if any(
+                not isinstance(values, list)
+                or any(not isinstance(fact, dict) for fact in values)
+                for values in units.values()
+            ):
+                return False
+    return True
+
+
+def _valid_submission_payload(payload: dict[str, Any]) -> bool:
+    filings = payload.get("filings")
+    if isinstance(filings, dict) and "recent" in filings:
+        recent = filings.get("recent")
+        if not isinstance(recent, dict):
+            return False
+        accession = recent.get("accessionNumber")
+        filed = recent.get("filingDate")
+        if not isinstance(accession, list) or not isinstance(filed, list):
+            return False
+        length = len(accession)
+        return len(filed) == length and all(
+            len(values) == length for values in recent.values() if isinstance(values, list)
+        ) and all(isinstance(value, list) for value in recent.values())
+    fields, rows = payload.get("fields"), payload.get("data")
+    if isinstance(fields, list) or isinstance(rows, list):
+        if not isinstance(fields, list) or not isinstance(rows, list):
+            return False
+        return all(isinstance(row, list) and len(row) == len(fields) for row in rows)
+    accession, filed = payload.get("accessionNumber"), payload.get("filingDate")
+    if isinstance(accession, list) and isinstance(filed, list):
+        length = len(accession)
+        return len(filed) == length and all(
+            len(values) == length for values in payload.values() if isinstance(values, list)
+        )
+    return False
+
+
+def _merge_resource_status(statuses: dict[str, str], kind: str, status: str) -> None:
+    current = statuses.get(kind, "no_input")
+    priority = {
+        "no_input": 0,
+        "no_usable_facts": 1,
+        "no_usable_submissions": 1,
+        "misattributed": 1,
+        "ok": 2,
+        "missing": 3,
+        "unreadable": 4,
+        "malformed": 5,
+    }
+    if priority.get(status, 0) >= priority.get(current, 0):
+        statuses[kind] = status
 
 
 def organize_financials(
@@ -491,38 +800,231 @@ def organize_financials(
     """
 
     root = raw_dir / "sec" / "financials"
-    paths = _owned_paths(root, cik10)
+    (
+        raw_inventory,
+        raw_inventory_sha256,
+        manifest_status,
+        paths,
+        input_hashes_by_path,
+        expected_types,
+        manifest_rejections,
+    ) = _raw_input_inventory(root, cik10)
     fact_payloads: list[dict[str, Any]] = []
-    submission_payloads: list[tuple[int, dict[str, Any]]] = []
+    submission_payloads: list[tuple[int, str, Path, dict[str, Any]]] = []
+    input_rejections: Counter[str] = Counter(manifest_rejections)
+    input_resource_status = {
+        "manifest": manifest_status,
+        "submissions": "no_input",
+        "companyfacts": "no_input",
+    }
+    input_resource_diagnostics: list[dict[str, Any]] = []
+    for reason in ("no_cik_owned_resources", "empty_cik_resource_versions"):
+        if input_rejections.get(reason, 0):
+            input_resource_diagnostics.append(
+                {
+                    "kind": "manifest",
+                    "status": "no_matching_cik_resources",
+                    "reason": reason,
+                    "count": input_rejections[reason],
+                }
+            )
+    for item in raw_inventory:
+        kind = item.get("kind")
+        status_kind = "submissions" if kind == "submission_page" else kind
+        if item.get("status") in {"missing", "unreadable"}:
+            resource_state = item["status"]
+            _merge_resource_status(input_resource_status, "manifest", resource_state)
+            if status_kind in {"submissions", "companyfacts"}:
+                _merge_resource_status(input_resource_status, status_kind, resource_state)
+            input_rejections[
+                "missing_manifest_resource" if resource_state == "missing" else "unreadable_raw_payload"
+            ] += 1
+            input_resource_diagnostics.append(
+                {"kind": kind, "path": item.get("path"), "status": resource_state}
+            )
+    if manifest_status in {"unreadable", "malformed"}:
+        diagnostic_key = f"{manifest_status}_raw_manifest"
+        if input_rejections.get(diagnostic_key, 0) == 0:
+            input_rejections[diagnostic_key] += 1
+        input_resource_diagnostics.append(
+            {"kind": "manifest", "path": "manifest.json", "status": manifest_status}
+        )
+
     target_cik = str(int(cik10)) if cik10.isdigit() else cik10
     for path in paths:
+        expected = expected_types.get(path, set())
+        source_path = (
+            str(path.relative_to(raw_dir.parent.parent))
+            if path.is_relative_to(raw_dir.parent.parent)
+            else str(path)
+        )
+        source_hash = input_hashes_by_path[path]
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except (OSError, ValueError, UnicodeDecodeError):
+            input_rejections["unreadable_raw_payload"] += 1
+            for kind in expected or {"unknown"}:
+                _merge_resource_status(input_resource_status, kind, "unreadable")
+            input_resource_diagnostics.append(
+                {"kind": sorted(expected) or ["unknown"], "path": source_path, "status": "unreadable"}
+            )
             continue
         if not isinstance(payload, dict):
+            input_rejections["invalid_raw_payload_shape"] += 1
+            for kind in expected or {"unknown"}:
+                status_kind = "submissions" if kind == "submission_page" else kind
+                if kind == "submission_page":
+                    input_rejections["ragged_submission_page"] += 1
+                    _merge_resource_status(input_resource_status, status_kind, "no_usable_submissions")
+                else:
+                    _merge_resource_status(input_resource_status, status_kind, "malformed")
+            input_resource_diagnostics.append(
+                {"kind": sorted(expected) or ["unknown"], "path": source_path, "status": "malformed"}
+            )
             continue
+
+        if "facts" in payload:
+            actual_kind = "companyfacts"
+        elif "submission_page" in expected:
+            actual_kind = "submission_page"
+        elif "companyfacts" in expected:
+            # SEC uses a parseable empty object as a placeholder for filers with
+            # no Company Facts/XBRL payload.
+            actual_kind = "companyfacts"
+        else:
+            actual_kind = "submissions"
+        status_kind = "submissions" if actual_kind == "submission_page" else actual_kind
+
         payload_cik = payload.get("cik")
         if payload_cik is not None and str(payload_cik).lstrip("0") != target_cik.lstrip("0"):
+            input_rejections["raw_payload_cik_mismatch"] += 1
+            for kind in expected or {status_kind}:
+                status_type = "submissions" if kind == "submission_page" else kind
+                _merge_resource_status(input_resource_status, status_type, "misattributed")
+            input_resource_diagnostics.append(
+                {
+                    "kind": sorted(expected) or [status_kind],
+                    "path": source_path,
+                    "status": "misattributed",
+                    "expected_cik": target_cik,
+                    "payload_cik": payload_cik,
+                }
+            )
             continue
-        if isinstance(payload.get("facts"), dict):
-            fact_payloads.append(payload)
-        elif "filings" in payload or "fields" in payload or _is_column_oriented(payload):
-            submission_payloads.append((_submission_rank(payload), payload))
+
+        if actual_kind == "companyfacts" and (
+            "facts" not in payload
+            or (isinstance(payload.get("facts"), dict) and not payload["facts"])
+        ):
+            input_rejections["no_usable_facts"] += 1
+            _merge_resource_status(input_resource_status, "companyfacts", "no_usable_facts")
+            input_resource_diagnostics.append(
+                {"kind": "companyfacts", "path": source_path, "status": "no_usable_facts"}
+            )
+            continue
+
+        if actual_kind == "companyfacts":
+            valid = _valid_companyfacts_payload(payload)
+        else:
+            valid = _valid_submission_payload(payload)
+        if expected and actual_kind not in expected:
+            valid = False
+            input_rejections["raw_payload_type_mismatch"] += 1
+        if not valid:
+            if actual_kind == "submission_page":
+                input_rejections["ragged_submission_page"] += 1
+                _merge_resource_status(input_resource_status, "submissions", "no_usable_submissions")
+                input_resource_diagnostics.append(
+                    {"kind": actual_kind, "path": source_path, "status": "rejected_page"}
+                )
+                continue
+            if actual_kind == "submissions":
+                input_rejections["invalid_submissions_payload_shape"] += 1
+            else:
+                input_rejections["invalid_companyfacts_payload_shape"] += 1
+            _merge_resource_status(input_resource_status, status_kind, "malformed")
+            input_resource_diagnostics.append(
+                {"kind": actual_kind, "path": source_path, "status": "malformed"}
+            )
+            continue
+        _merge_resource_status(input_resource_status, status_kind, "ok")
+        if actual_kind == "companyfacts":
+            fact_payloads.append(
+                {
+                    **payload,
+                    "_source_fact_path": source_path,
+                    "_source_fact_sha256": source_hash,
+                }
+            )
+        else:
+            submission_payloads.append((_submission_rank(payload), str(path), path, payload))
 
     # Historical submission pages overlap the main ``filings.recent`` block for
     # their newest accessions; dedupe by accession number, preferring the main
     # submissions payload and keeping a deterministic rank-then-path order.
     filings: list[dict[str, Any]] = []
     seen_accessions: set[str] = set()
-    for _, payload in sorted(submission_payloads, key=lambda item: item[0]):
-        for row in _submission_rows(payload):
+    for _, _, source_path, payload in sorted(submission_payloads, key=lambda item: (item[0], item[1])):
+        for row_index, row in enumerate(_submission_rows(payload)):
             accession = str(row.get("accessionNumber") or "")
             if accession and accession in seen_accessions:
                 continue
             if accession:
                 seen_accessions.add(accession)
-            filings.append(row)
+            try:
+                stored_path = str(source_path.relative_to(raw_dir.parent.parent))
+            except ValueError:
+                stored_path = str(source_path)
+            filings.append(
+                {
+                    **row,
+                    "_source_submission_path": stored_path,
+                    "_source_submission_sha256": input_hashes_by_path[source_path],
+                    "_source_submission_locator": f"record[{row_index}]",
+                }
+            )
+
+    has_sec_inputs = any(
+        item.get("kind") not in {"manifest", "raw_inputs", "no_cik"}
+        for item in raw_inventory
+    )
+    if has_sec_inputs and input_resource_status.get("submissions") == "no_input":
+        _merge_resource_status(input_resource_status, "submissions", "no_usable_submissions")
+        input_rejections["no_submission_resource_for_cik"] += 1
+        input_resource_diagnostics.append(
+            {
+                "kind": "submissions",
+                "path": None,
+                "status": "no_usable_submissions",
+                "reason": "no_submission_reference_for_cik",
+            }
+        )
+
+    # Build the richer event/version artifacts before the legacy per-session
+    # latest-snapshot selection below; never reconstruct these tables from CSV.
+    from .financial_events import (
+        commit_artifact_meta,
+        commit_incomplete_diagnostic,
+        organize_artifact,
+    )
+
+    ticker = (output_ticker or _ticker_for_cik(raw_dir, cik10) or cik10).upper()
+    artifact = organize_artifact(
+        cik10,
+        ticker,
+        raw_dir,
+        organized_dir,
+        filings,
+        fact_payloads,
+        paths,
+        output_calendar=calendar,
+        initial_rejections=dict(input_rejections),
+        input_hashes_by_path=input_hashes_by_path,
+        raw_input_inventory=raw_inventory,
+        input_resource_status=input_resource_status,
+        input_resource_diagnostics=input_resource_diagnostics,
+        commit_meta=False,
+    )
 
     fact_index, fiscal_index = _build_fact_index(fact_payloads)
     report_rows: list[dict[str, Any]] = []
@@ -632,18 +1134,49 @@ def organize_financials(
     ]
     data = pd.DataFrame(output_rows, columns=columns)
     data["fiscal_year"] = pd.array(data["fiscal_year"], dtype="Int64")
-    ticker = (output_ticker or _ticker_for_cik(raw_dir, cik10) or cik10).upper()
     output = organized_dir / "stocks" / ticker / "financials.csv"
     output.parent.mkdir(parents=True, exist_ok=True)
-    data.to_csv(output, index=False, date_format="%Y-%m-%d")
-    inputs = []
-    for path in paths:
-        try:
-            relative = str(path.relative_to(raw_dir.parent.parent))
-        except ValueError:
-            relative = str(path)
-        inputs.append({"path": relative, "sha256": _sha256(path)})
-    _write_meta(
-        output.parent / "_meta.json", ticker, inputs, output, organized_dir, len(data), len(filings)
-    )
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{output.name}.", suffix=".tmp", dir=output.parent)
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    try:
+        data.to_csv(temporary, index=False, date_format="%Y-%m-%d")
+        os.replace(temporary, output)
+    except Exception as exc:
+        artifact.update({"complete": False, "status": "legacy_csv_write_failed", "write_error": str(exc)})
+        commit_incomplete_diagnostic(output.parent, ticker, artifact, artifact.get("_input_records", []))
+        raise
+    finally:
+        temporary.unlink(missing_ok=True)
+    inputs = [
+        {
+            "path": (
+                str(path.relative_to(raw_dir.parent.parent))
+                if path.is_relative_to(raw_dir.parent.parent)
+                else str(path)
+            ),
+            "sha256": input_hashes_by_path[path],
+        }
+        for path in paths
+    ]
+    try:
+        _write_meta(
+            output.parent / "_meta.json", ticker, inputs, output, organized_dir, len(data), len(filings)
+        )
+    except Exception as exc:
+        artifact.update({"complete": False, "status": "legacy_meta_write_failed", "write_error": str(exc)})
+        commit_incomplete_diagnostic(output.parent, ticker, artifact, artifact.get("_input_records", []))
+        raise
+    artifact_inputs = artifact.pop("_input_records", [])
+    try:
+        commit_artifact_meta(output.parent, ticker, artifact, artifact_inputs)
+    except Exception as exc:
+        artifact.update({"complete": False, "status": "final_meta_commit_failed", "write_error": str(exc)})
+        commit_incomplete_diagnostic(output.parent, ticker, artifact, artifact_inputs)
+        raise
+    if not artifact.get("complete"):
+        raise ValueError(
+            "financial-events artifact is incomplete: "
+            f"{artifact.get('rejection_counts', {})}"
+        )
     return output

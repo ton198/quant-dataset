@@ -1,0 +1,24 @@
+{
+  "cik": "0000000123",
+  "filings": {
+    "recent": {
+      "accessionNumber": [
+        "0000999999-24-000000",
+        "0000999999-24-000001",
+        "0000999999-24-000002"
+      ],
+      "filingDate": ["2024-01-10", "2024-01-12", "2024-01-16"],
+      "reportDate": ["2023-09-30", "2023-09-30", ""],
+      "acceptanceDateTime": [
+        "2024-01-10T18:00:00Z",
+        "2024-01-12T20:00:00Z",
+        "2024-01-16T15:00:00"
+      ],
+      "form": ["10-Q", "10-Q/A", "6-K"],
+      "primaryDocument": ["quarter.htm", "quarter-amended.htm", "sixk.htm"]
+    },
+    "files": [
+      {"name": "CIK0000000123-submissions-001.json"}
+    ]
+  }
+}

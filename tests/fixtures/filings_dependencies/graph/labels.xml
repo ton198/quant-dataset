@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<link:linkbase xmlns:link="http://www.xbrl.org/2003/linkbase"
+               xmlns:xlink="http://www.w3.org/1999/xlink">
+  <link:labelLink xlink:type="extended">
+    <link:loc xlink:type="locator" xlink:href="../taxonomy/root.xsd#root"/>
+  </link:labelLink>
+</link:linkbase>

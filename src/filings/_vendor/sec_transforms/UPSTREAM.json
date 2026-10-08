@@ -1,0 +1,25 @@
+{
+  "project": "Arelle/EDGAR",
+  "release": "25.2.1.1",
+  "commit": "47a372d099168f8669d20a8a6bbe5cb16bbf71ac",
+  "source_files": {
+    "__init__.py": {
+      "url": "https://raw.githubusercontent.com/Arelle/EDGAR/47a372d099168f8669d20a8a6bbe5cb16bbf71ac/transform/__init__.py",
+      "git_blob_sha1": "6c686a832c472b61773b5c167aa8566d036ab30d",
+      "sha256": "2296586f945ffd95ab37d3d4147c4e45f42ce4e5f397f61143e053208adefbf1"
+    },
+    "text2num.py": {
+      "url": "https://raw.githubusercontent.com/Arelle/EDGAR/47a372d099168f8669d20a8a6bbe5cb16bbf71ac/transform/text2num.py",
+      "git_blob_sha1": "94d1ab108b6167d63b8897a62afb9191d1106790",
+      "sha256": "6c9b26354320a2fb34fe380cdc71ff7f8d1cc712811e6b10c661e512f0383409"
+    }
+  },
+  "licenses": {
+    "sec_plugin": {
+      "file": "LICENSE-APACHE-2.0.txt",
+      "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    "text2num": "MIT terms and Copyright (c) 2008 Greg Hewgill are reproduced in the exact upstream text2num.py source header."
+  }
+}
