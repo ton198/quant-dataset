@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from cli.progress import report_progress
+
 from .config import Secrets, SourcesConfig
 from .progress import Progress, save_atomic
 
@@ -59,7 +61,11 @@ def fetch_macros(
     manifest = _manifest(manifest_path)
     resources = manifest["resources"]
     outputs: list[Path] = []
-    for series_id in cfg.macros.series:
+    for index, series_id in enumerate(cfg.macros.series, start=1):
+        report_progress(
+            logger,
+            f"Download macros {index}/{len(cfg.macros.series)} series={series_id}",
+        )
         query = {
             "series_id": series_id,
             "file_type": cfg.macros.file_type,

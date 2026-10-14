@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import argparse
-import logging
 from datetime import date
 from pathlib import Path
 
+from cli.progress import configure_logging
 from download.manager import run_download
 
 
@@ -52,7 +52,7 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     """Parse CLI arguments and return the selected command's exit code."""
     args = _parser().parse_args(argv)
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    configure_logging()
     if args.command == "filings":
         from filings.cli import run_filings_command
 

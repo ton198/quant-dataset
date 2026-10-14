@@ -8,6 +8,8 @@ from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
+from cli.progress import finish_progress, report_progress
+
 from . import financials, macros, market, progress, universe
 from .config import SourcesConfig, load_secrets, load_sources
 from .errors import ConfigError, DownloadError
@@ -91,9 +93,10 @@ def run_download(
             )
             failures = 0
             if wants_market:
-                assert start is not None and end is not None
                 todo = progress.pending(state, "market")
-                for index, ticker in enumerate(todo):
+                assert start is not None and end is not None
+                for index, ticker in enumerate(todo, start=1):
+                    report_progress(logger, f"Download market {index}/{len(todo)} ticker={ticker}")
                     try:
                         output = market.fetch_market(ticker, start, end, cfg, cfg.raw_dir)
                     except Exception as exc:
@@ -107,10 +110,16 @@ def run_download(
                     else:
                         progress.mark_done(state, "market", ticker)
                     progress.save_atomic(state, cfg.progress_file, cfg.progress_tmp_file)
-                    if index + 1 < len(todo) and cfg.market.rate_limit_seconds:
+                    if index < len(todo) and cfg.market.rate_limit_seconds:
                         time.sleep(cfg.market.rate_limit_seconds)
+                finish_progress()
             if "financials" in stages:
-                for ticker in progress.pending(state, "financials"):
+                todo = progress.pending(state, "financials")
+                for index, ticker in enumerate(todo, start=1):
+                    report_progress(
+                        logger,
+                        f"Download financials {index}/{len(todo)} ticker={ticker}",
+                    )
                     record = by_ticker.get(ticker)
                     if record is None:
                         progress.mark_failed(state, "financials", ticker, "ticker has no SEC CIK")
@@ -129,6 +138,7 @@ def run_download(
                             failures += 1
                             logger.error("Financial download failed for %s: %s", ticker, exc)
                     progress.save_atomic(state, cfg.progress_file, cfg.progress_tmp_file)
+                finish_progress()
             if "macros" in stages:
                 try:
                     assert secrets is not None
@@ -143,6 +153,8 @@ def run_download(
                         progress.mark_failed(state, "macros", series_id, str(exc))
                         failures += 1
                     progress.save_atomic(state, cfg.progress_file, cfg.progress_tmp_file)
+                finally:
+                    finish_progress()
             progress.save_atomic(state, cfg.progress_file, cfg.progress_tmp_file)
         return 1 if failures else 0
     except (ConfigError, DownloadError) as exc:

@@ -38,6 +38,8 @@ quant-dataset download [--stage {market,financials,macros,all}]... \
 
 `market` 下载 Yahoo 日线，`financials` 下载 SEC Company Facts/submissions 及其引用的历史 submissions 分页，`macros` 下载配置的 FRED 序列。输出保持 provider 原始数据；不再有 organize 阶段。SEC financial metadata 不是 filing 正文档案。
 
+各命令都会向 stderr 报告阶段进度：交互终端原位更新一行，重定向输出时每次更新单独占一行。`download` 显示 ticker/series 序号；`build-report-samples` 显示已完成 filing 数、状态计数、速率和 ETA。
+
 ## SEC 报告样本
 
 ```text

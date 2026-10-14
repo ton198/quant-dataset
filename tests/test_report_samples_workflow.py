@@ -321,8 +321,9 @@ def test_concurrent_real_workers_use_shared_mock_sec_client(tmp_path: Path, monk
 
 
 def test_build_respects_worker_bound_and_rejects_protected_output(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, caplog
 ) -> None:
+    caplog.set_level("INFO", logger="filings.report_samples")
     import threading
     from datetime import date
 
@@ -373,6 +374,7 @@ def test_build_respects_worker_bound_and_rejects_protected_output(
         user_agent="Research analyst@acme.com",
         workers=2,
     )
+    assert "SEC report progress 4/4" in caplog.text
     assert result["filings"] == 4 and result["samples"] == 4
     assert maximum == 2
     try:
@@ -821,3 +823,46 @@ def test_validator_rejects_wrong_nested_schema(tmp_path: Path) -> None:
         assert "schema mismatch" in str(exc)
     else:
         raise AssertionError("validator must reject the wrong schema")
+
+
+def test_report_progress_counts_skipped_and_failed_filings(
+    tmp_path: Path, monkeypatch, caplog
+) -> None:
+    from types import SimpleNamespace
+
+    from filings.report_samples import build_report_samples
+
+    filings = tuple(
+        SimpleNamespace(
+            cik10=f"{index:010d}",
+            accession_number=f"{index:010d}-24-000001",
+            form="10-K",
+            filed_date="2024-01-01",
+            report_date=None,
+            primary_document="report.htm",
+        )
+        for index in (1, 2)
+    )
+    monkeypatch.setattr(
+        "filings.report_samples.scan_cached_filings",
+        lambda *args, **kwargs: SimpleNamespace(filings=filings),
+    )
+
+    def worker(item, user_agent, work_root, *, client, committed_root):
+        identity = f"{item.cik10}:{item.accession_number}"
+        status = "skipped" if item.cik10.endswith("1") else "failed"
+        diagnostic = {"filing_id": identity, "status": status, "reason": "test"}
+        return None, diagnostic
+
+    monkeypatch.setattr("filings.report_samples._filing_worker", worker)
+    caplog.set_level("INFO", logger="filings.report_samples")
+    result = build_report_samples(
+        cache_root=tmp_path / "cache",
+        out=tmp_path / "out",
+        work_dir=tmp_path / "work",
+        user_agent="Research analyst@acme.com",
+    )
+
+    assert result["filings"] == 2
+    assert "skipped=1" in caplog.text
+    assert "failed=1" in caplog.text

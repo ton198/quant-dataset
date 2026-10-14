@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import sys
+from datetime import date
 from pathlib import Path
 
 import pytest
 
+import download.manager as manager
 from cli.main import main
 from download.config import Secrets, load_secrets, load_sources
 from download.errors import ConfigError, DownloadError
@@ -22,6 +25,37 @@ from download.progress import (
     pending,
     save_atomic,
 )
+
+
+def test_download_reports_per_ticker_progress_without_network(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(manager, "load_sources", lambda root: load_sources(REPO_ROOT))
+    monkeypatch.setattr(manager, "load_secrets", lambda root: Secrets("key", "user@example.com"))
+    monkeypatch.setattr(
+        manager.universe,
+        "fetch_universe",
+        lambda cfg, secrets: [SimpleNamespace(ticker="AAA", cik10="0000000001")],
+    )
+    monkeypatch.setattr(manager.market, "fetch_market", lambda *args: ["bar"])
+
+    with caplog.at_level(logging.INFO, logger="download.manager"):
+        result = manager.run_download(
+            repo_root=REPO_ROOT,
+            stages=["market"],
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 2),
+            force=False,
+            dry_run=False,
+            tickers=["AAA"],
+            data_dir=tmp_path,
+        )
+
+    assert result == 0
+    assert "Download market 1/1 ticker=AAA" in caplog.text
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = REPO_ROOT / "src"

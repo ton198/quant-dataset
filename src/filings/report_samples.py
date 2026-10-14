@@ -19,6 +19,8 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from cli.progress import finish_progress, report_progress
+
 from .catalog import scan_cached_filings
 from .content_parse import parse_content
 from .document_selection import enumerate_documents, refine_document_plan
@@ -501,6 +503,7 @@ def build_report_samples(
                     skipped += diagnostic.get("status") == "skipped"
                     failed += diagnostic.get("status") == "failed"
                     if diagnostic.get("status") == "failed":
+                        finish_progress()
                         logger.warning(
                             "SEC report failed filing_id=%s reason=%s",
                             identity,
@@ -517,17 +520,12 @@ def build_report_samples(
                         rate = (completed - len(prior)) / elapsed * 3600 if elapsed else 0.0
                         remaining = max(0, len(selected) - completed)
                         eta_hours = remaining / rate if rate else float("inf")
-                        logger.info(
-                            "SEC report progress %d/%d emitted=%d skipped=%d failed=%d "
-                            "rate=%.1f/hour eta=%.1fh last=%s",
-                            completed,
-                            len(selected),
-                            emitted,
-                            skipped,
-                            failed,
-                            rate,
-                            eta_hours,
-                            diagnostic["filing_id"],
+                        report_progress(
+                            logger,
+                            f"SEC report progress {completed}/{len(selected)} "
+                            f"emitted={emitted} skipped={skipped} failed={failed} "
+                            f"rate={rate:.1f}/hour eta={eta_hours:.1f}h "
+                            f"last={diagnostic['filing_id']}",
                         )
                         last_log_at = now
                     diagnostics_by_id[identity] = diagnostic
@@ -556,6 +554,7 @@ def build_report_samples(
                             committed_root=committed,
                         )
                     ] = next_item
+        finish_progress()
         if shard_rows:
             _write_shards(staging, shard_rows, start_index=shard_number)
         (staging / "identity.json").write_text(

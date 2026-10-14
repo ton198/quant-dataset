@@ -38,6 +38,8 @@ quant-dataset download [--stage {market,financials,macros,all}]... \
 
 `market` downloads Yahoo daily bars, `financials` downloads SEC Company Facts/submissions and referenced historical submission pages, and `macros` downloads configured FRED series. Outputs remain raw provider data. There is no organize stage. SEC financial metadata is not a filing-document archive.
 
+Each command reports stage progress to stderr: an interactive terminal updates one line in place, while redirected output emits one line per update. `download` reports ticker/series indices; `build-report-samples` reports completed filings, status counts, rate, and ETA.
+
 ## SEC report samples
 
 ```text
