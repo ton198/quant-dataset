@@ -152,7 +152,7 @@ def fetch_financials(cik10: str, cfg: SourcesConfig, secrets: Secrets, raw_dir: 
         ):
             url = "https://data.sec.gov/submissions/" + name
             obtain(f"submissions-page:{cik10}:{name}", url)
-    # Cache hits are also returned, so callers can organize existing inputs.
+    # Cache hits are also returned so callers can reuse verified resources.
     for logical_key, url in requests:
         if logical_key not in seen_keys:
             for item in reversed(resources):

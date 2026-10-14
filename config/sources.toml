@@ -27,6 +27,9 @@ rate_limit_seconds = 0.2     # SEC enforces ~5 req/s; stay polite
 timeout_seconds = 30
 max_retries = 3
 
+[filings]
+forms = ["10-K", "10-K/A", "10-Q", "10-Q/A", "20-F", "20-F/A", "40-F", "40-F/A"]
+
 [macros]
 provider = "fred"
 base_url = "https://api.stlouisfed.org/fred/series/observations"
@@ -51,15 +54,11 @@ series = [
 ]
 
 [download]
-# Where to put raw payloads and organized outputs (relative to repo root)
+# Raw payload and progress paths (relative to repo root).
 raw_dir = "data/raw"
-organized_dir = "data/organized"
 progress_file = "data/.download_progress"
 progress_tmp_file = "data/.download_progress.tmp"
 progress_lock_file = "data/.download_progress.lock"
-# Per design: progress file is ALWAYS preserved (it doubles as a re-download
-# worklist). Use `--force` to ignore it and start from scratch.
-preserve_progress_on_success = true
 
 [logging]
 level = "INFO"

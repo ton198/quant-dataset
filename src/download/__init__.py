@@ -1,7 +1,7 @@
-"""Download-only data ingestion and organization pipeline."""
+"""Raw provider data download pipeline."""
 
 from __future__ import annotations
 
-from .errors import ConfigError, DownloadError, OrganizeError
+from .errors import ConfigError, DownloadError
 
-__all__ = ["ConfigError", "DownloadError", "OrganizeError"]
+__all__ = ["ConfigError", "DownloadError"]

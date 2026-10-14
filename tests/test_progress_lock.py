@@ -3,15 +3,10 @@
 from __future__ import annotations
 
 import os
-import sys
 import time
 from pathlib import Path
 
 import pytest
-
-SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src"
-if str(SOURCE_ROOT) not in sys.path:
-    sys.path.insert(0, str(SOURCE_ROOT))
 
 from download.errors import DownloadError
 from download.progress import acquire_lock

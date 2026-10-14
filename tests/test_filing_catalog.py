@@ -26,6 +26,7 @@ from filings import (  # noqa: E402
     read_cached_catalog,
     submission_rows,
 )
+from filings.catalog import scan_cached_filings  # noqa: E402
 
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "filings_core"
 CIK = "0000000123"
@@ -391,6 +392,47 @@ def test_forms_override_only_narrows_approved_forms(tmp_path: Path) -> None:
     assert {row["form"] for row in result.filings} == {"10-K"}
     with pytest.raises(CatalogError, match="approved forms"):
         _catalog(root, forms={"8-K"})
+
+
+def test_scan_cached_filings_filters_forms_and_excludes_conflicts(tmp_path: Path) -> None:
+    root = tmp_path / "cache"
+    main = _fixture("submissions.json")
+    page = _fixture("submissions-001.json")
+    main_recent = main["filings"]["recent"]
+    main_recent["accessionNumber"].append("0000000123-24-000098")
+    main_recent["filingDate"].append("2024-01-18")
+    main_recent["reportDate"].append("")
+    main_recent["acceptanceDateTime"].append("")
+    main_recent["form"].append("10-K")
+    main_recent["primaryDocument"].append("")
+    page_recent = page
+    page_recent["filingDate"][0] = "2024-01-13"
+    page_recent["accessionNumber"].append("0000000123-24-000099")
+    page_recent["filingDate"].append("2024-01-17")
+    page_recent["reportDate"].append("")
+    page_recent["acceptanceDateTime"].append("")
+    page_recent["form"].append("6-K")
+    page_recent["primaryDocument"].append("")
+    _write_cache(root, main_payload=main, page_payload=page)
+
+    result = scan_cached_filings(root, forms={"10-K", "10-Q", "10-Q/A"})
+    ids = {item.accession_number for item in result.filings}
+    assert "0000000123-24-000098" in ids
+    assert "0000000123-24-000099" not in ids
+    assert "0000999999-24-000001" not in ids
+    assert result.conflicting_accessions == ("0000999999-24-000001",)
+    assert result.invalid_row_count == 0
+    assert (
+        next(
+            item for item in result.filings if item.accession_number.endswith("000098")
+        ).primary_document
+        is None
+    )
+
+
+def test_scan_cached_filings_rejects_invalid_form_collection(tmp_path: Path) -> None:
+    with pytest.raises(CatalogError, match="only strings"):
+        scan_cached_filings(tmp_path, forms={1})
 
 
 def test_core_arrow_schemas_match_contract_columns() -> None:

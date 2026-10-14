@@ -2,26 +2,16 @@
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
-from datetime import date
 from pathlib import Path
 
-import pandas as pd
 import pytest
-
-SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src"
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(SOURCE_ROOT) not in sys.path:
-    sys.path.insert(0, str(SOURCE_ROOT))
 
 from cli.main import main
 from download.config import Secrets, load_secrets, load_sources
 from download.errors import ConfigError, DownloadError
-from download.organize import organize_market
-from download.organize_financials import organize_financials
 from download.progress import (
     Progress,
     acquire_lock,
@@ -32,6 +22,10 @@ from download.progress import (
     pending,
     save_atomic,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SOURCE_ROOT = REPO_ROOT / "src"
+
 
 # config.py
 
@@ -83,6 +77,40 @@ def test_load_sources_parses_provider_settings() -> None:
     # SourcesConfig intentionally freezes this TOML array as a tuple.
     assert isinstance(config.macros.series, tuple)
     assert list(config.macros.series)[0] == "CPIAUCSL"
+
+
+def test_load_sources_reads_report_sample_forms() -> None:
+    config = load_sources(REPO_ROOT)
+    assert config.filing_forms == (
+        "10-K",
+        "10-K/A",
+        "10-Q",
+        "10-Q/A",
+        "20-F",
+        "20-F/A",
+        "40-F",
+        "40-F/A",
+    )
+
+
+def test_cli_rejects_retired_download_stages() -> None:
+    for stage in ("statements", "organize"):
+        with pytest.raises(SystemExit) as exit_info:
+            main(["download", "--stage", stage])
+        assert exit_info.value.code == 2
+
+
+def test_load_sources_requires_filings_table(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    source_text = (REPO_ROOT / "config" / "sources.toml").read_text(encoding="utf-8")
+    marker = "\n[filings]\n"
+    assert marker in source_text
+    (config_dir / "sources.toml").write_text(
+        source_text.split(marker, 1)[0] + "\n", encoding="utf-8"
+    )
+    with pytest.raises(ConfigError, match="Invalid or incomplete sources configuration"):
+        load_sources(tmp_path)
 
 
 # progress.py
@@ -186,252 +214,6 @@ def test_acquire_lock_rejects_existing_lock(tmp_path: Path) -> None:
     with pytest.raises(DownloadError, match="holds lock"):
         with acquire_lock(lock_path):
             pytest.fail("existing lock must not be acquired")
-
-
-# organize.py market quality and derived fields
-
-
-def _write_market_csv(raw_dir: Path, rows: list[dict[str, object]]) -> None:
-    """Write a small local Yahoo-shaped CSV fixture."""
-    source = raw_dir / "yahoo" / "TEST"
-    source.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(rows).to_csv(source / "prices.csv", index=False)
-
-
-def _bar(
-    day: str,
-    *,
-    open_: float = 10,
-    high: float = 12,
-    low: float = 9,
-    close: float = 11,
-    adj_close: float | None = None,
-    volume: float = 100,
-) -> dict[str, object]:
-    """Return one simple Yahoo-shaped daily OHLCV bar."""
-    return {
-        "Date": day,
-        "Open": open_,
-        "High": high,
-        "Low": low,
-        "Close": close,
-        "Adj Close": close if adj_close is None else adj_close,
-        "Volume": volume,
-    }
-
-
-def _organize_bars(
-    tmp_path: Path, rows: list[dict[str, object]], calendar: list[date]
-) -> pd.DataFrame:
-    """Organize fixture rows and return the generated market frame."""
-    raw_dir = tmp_path / "raw"
-    organized_dir = tmp_path / "organized"
-    _write_market_csv(raw_dir, rows)
-    output = organize_market("TEST", raw_dir, organized_dir, calendar)
-    return pd.read_csv(output)
-
-
-def test_market_valid_ohlc_row_is_flagged_ok(tmp_path: Path) -> None:
-    """A valid OHLCV bar receives the ok quality flag."""
-    result = _organize_bars(tmp_path, [_bar("2020-01-02")], [date(2020, 1, 2)])
-
-    assert result.loc[0, "quality_flag"] == "ok"
-
-
-def test_market_invalid_high_is_flagged(tmp_path: Path) -> None:
-    """A high below another OHLC value is classified as invalid OHLC."""
-    result = _organize_bars(
-        tmp_path,
-        [_bar("2020-01-02", open_=10, high=8, low=7, close=9)],
-        [date(2020, 1, 2)],
-    )
-
-    assert result.loc[0, "quality_flag"] == "invalid_ohlc"
-
-
-def test_market_negative_price_is_flagged(tmp_path: Path) -> None:
-    """A negative closing price receives the negative-price flag."""
-    result = _organize_bars(
-        tmp_path,
-        [_bar("2020-01-02", open_=-1, high=1, low=-2, close=-1)],
-        [date(2020, 1, 2)],
-    )
-
-    assert result.loc[0, "quality_flag"] == "negative_price"
-
-
-def test_market_zero_close_flag_case_is_not_supported(tmp_path: Path) -> None:
-    """The requested zero-close negative-price classification is not implemented."""
-    pytest.skip(
-        "close == 0 is classified as invalid_ohlc by the current implementation, not negative_price"
-    )
-
-
-def test_market_non_session_quality_flag_is_not_supported(tmp_path: Path) -> None:
-    """The requested non-session quality flag is not implemented."""
-    pytest.skip("organize_market filters out dates outside calendar before assigning quality flags")
-
-
-def test_market_adjustment_factor_and_one_day_return(tmp_path: Path) -> None:
-    """Derived adjustment and daily-return columns match a known close series."""
-    rows = [
-        _bar("2020-01-02", close=10, adj_close=9),
-        _bar("2020-01-03", close=11, adj_close=11),
-        _bar("2020-01-06", close=12, adj_close=15),
-    ]
-    result = _organize_bars(tmp_path, rows, [date(2020, 1, 2), date(2020, 1, 3), date(2020, 1, 6)])
-
-    assert result["adjustment_factor"].tolist() == pytest.approx([0.9, 1.0, 1.25])
-    assert pd.isna(result.loc[0, "return_1d"])
-    assert result.loc[1, "return_1d"] == pytest.approx(0.1)
-    assert result.loc[2, "return_1d"] == pytest.approx(12 / 11 - 1)
-
-
-# organize_financials.py as-of filing visibility
-
-
-def _write_financial_inputs(
-    raw_dir: Path,
-    filings: list[dict[str, object]],
-    revenue_values: dict[str, float],
-) -> None:
-    """Write facts, submission rows, and an ownership manifest for a CIK."""
-    cik10 = "0000000001"
-    root = raw_dir / "sec" / "financials"
-    root.mkdir(parents=True, exist_ok=True)
-    facts = {
-        "cik": 1,
-        "facts": {
-            "us-gaap": {
-                "Revenues": {
-                    "units": {
-                        "USD": [
-                            {
-                                "filed": str(filing["filingDate"]),
-                                "end": str(filing["reportDate"]),
-                                "fy": filing["fy"],
-                                "fp": filing["fp"],
-                                "val": revenue_values[str(filing["accessionNumber"])],
-                            }
-                            for filing in filings
-                        ]
-                    }
-                }
-            }
-        },
-    }
-    submission = {
-        "cik": 1,
-        "filings": {
-            "recent": {
-                key: [filing[key] for filing in filings]
-                for key in ("filingDate", "reportDate", "fy", "fp", "accessionNumber", "form")
-            }
-        },
-    }
-    facts_path = root / "facts.json"
-    submission_path = root / "submissions.json"
-    facts_path.write_text(json.dumps(facts), encoding="utf-8")
-    submission_path.write_text(json.dumps(submission), encoding="utf-8")
-    (root / "manifest.json").write_text(
-        json.dumps(
-            {
-                "resources": [
-                    {"logical_key": f"companyfacts:{cik10}", "path": facts_path.name},
-                    {"logical_key": f"submissions:{cik10}", "path": submission_path.name},
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-
-
-def _filing(filed: str, accession: str, form: str = "10-Q") -> dict[str, object]:
-    """Return a filing record with fixed fiscal metadata."""
-    return {
-        "filingDate": filed,
-        "reportDate": "2019-12-31",
-        "fy": 2019,
-        "fp": "FY",
-        "accessionNumber": accession,
-        "form": form,
-    }
-
-
-def _organize_filings(
-    tmp_path: Path,
-    filings: list[dict[str, object]],
-    revenue_values: dict[str, float],
-    sessions: list[date],
-) -> pd.DataFrame:
-    """Organize fixture filings and return their session-aligned output."""
-    raw_dir = tmp_path / "raw"
-    _write_financial_inputs(raw_dir, filings, revenue_values)
-    output = organize_financials("0000000001", raw_dir, tmp_path / "organized", sessions)
-    return pd.read_csv(output)
-
-
-def _two_filings() -> list[dict[str, object]]:
-    """Return the two filing dates used by the as-of tests."""
-    return [_filing("2020-01-15", "first"), _filing("2020-04-15", "second")]
-
-
-def test_financial_as_of_before_second_filing_uses_first(tmp_path: Path) -> None:
-    """A February session only sees the filing published the previous January."""
-    result = _organize_filings(
-        tmp_path,
-        _two_filings(),
-        {"first": 100.0, "second": 200.0},
-        [date(2020, 2, 1)],
-    )
-
-    assert result.loc[0, "revenue"] == 100.0
-    assert result.loc[0, "accession_number"] == "first"
-
-
-def test_financial_as_of_after_second_filing_uses_second(tmp_path: Path) -> None:
-    """A May session sees the more recently filed April report."""
-    result = _organize_filings(
-        tmp_path,
-        _two_filings(),
-        {"first": 100.0, "second": 200.0},
-        [date(2020, 5, 1)],
-    )
-
-    assert result.loc[0, "revenue"] == 200.0
-    assert result.loc[0, "accession_number"] == "second"
-
-
-def test_financial_filing_becomes_visible_on_next_calendar_session(tmp_path: Path) -> None:
-    """A filing is hidden on its filed date and visible at the next session."""
-    result = _organize_filings(
-        tmp_path,
-        [_filing("2020-01-15", "first")],
-        {"first": 100.0},
-        [date(2020, 1, 15), date(2020, 1, 16)],
-    )
-
-    assert pd.isna(result.loc[0, "available_as_of"])
-    assert result.loc[1, "available_as_of"] == "2020-01-15"
-    assert result.loc[1, "revenue"] == 100.0
-
-
-def test_financial_amendment_is_a_later_as_of_candidate(tmp_path: Path) -> None:
-    """Both original and amendment remain candidates, with the latest visible filing selected."""
-    original = _filing("2020-01-15", "original", "10-K")
-    amendment = _filing("2020-03-15", "amendment", "10-K/A")
-    result = _organize_filings(
-        tmp_path,
-        [original, amendment],
-        {"original": 100.0, "amendment": 110.0},
-        [date(2020, 2, 1), date(2020, 4, 1)],
-    )
-
-    assert result.loc[0, "accession_number"] == "original"
-    assert result.loc[0, "revenue"] == 100.0
-    assert result.loc[1, "accession_number"] == "amendment"
-    assert result.loc[1, "is_amendment"]
-    assert result.loc[1, "revenue"] == 110.0
 
 
 # cli/main.py

@@ -27,6 +27,7 @@ _SEC_PDF_TEXT_LINE_RE = re.compile(
     rb"^[ \t]*<TEXT>[ \t]*(?:\r\n|\r|\n)", re.IGNORECASE | re.MULTILINE
 )
 
+
 def sec_envelope_encoding(raw: bytes) -> tuple[str, int] | None:
     """Return a safely decodable candidate encoding for a leading SEC envelope."""
     candidates: list[tuple[str, int]] = []

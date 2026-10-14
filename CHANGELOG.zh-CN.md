@@ -15,6 +15,12 @@
 - 新增带校验字符的窗口内短引用（`open-financial-v3`），所有引文字段精确按请求映射解码，映射进入 request identity 和 journal。未知或写错的 ref 保持 unresolved；原始来源校验和模型响应不变。
 - 新 20 份 filing、598 窗口真实 CLI 批次验证短引用协议：240 个 schema 有效响应没有未知短 ref。批次主要因服务余额耗尽（331 个 HTTP 402）和动态并发限制（23 个 HTTP 429）未完成；保留输出和失败索引，不重试。
 
+- 新增确定性的 SEC statements 样本下载器（`download --stage statements`）和独立的 `build-statements-content` 命令，生成逐 filing 的规范化 Parquet 表。
+- Statements 内容解析器 3.0.0 使用 `filings-content-v2` 合同，仅生成有序的 `text`/`table` 块及文档元数据。基于数值形状的分类保留带可比数值的标签行，并排除目录；不输出数值解析结果或推断表格网格。每个 filing 目录仅包含 `documents.parquet` 和 `blocks.parquet`。
+- Statements 内容解析器 3.1.1 新增 filing 级 XBRL 渲染，组合经过校验的 instance、schema 和 linkbase（包括 schema 内嵌链接）。按 presentation 顺序生成章节标题、原始词面值报表和采用 HTML 粒度拆分的附注块，均归属 instance 文档。所有 role kind 均排除以 `(Detail…)`、`(Details…)` 或 `(Narrative)` 结尾的角色，保留 Parenthetical 角色。Schema 与 `filings-content-v2` 合同不变，既有 HTML block ID 保持稳定。XBRL 与 primary HTML 内容并存，可关联文档元数据选择来源；schema/linkbase 行仍为 `not_content`，任何包成员不可读或校验不符都阻止整包渲染。仅需 `extraction` extra，不使用 Arelle。
+
+- DuckDB 1.5.6 现为项目常规依赖；查询命令使用标准安装方式。
+
 ## [0.1.0] - 2026-09-29
 
 ### Added

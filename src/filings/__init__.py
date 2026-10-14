@@ -1,18 +1,13 @@
-"""Stable public filing-catalog APIs without optional parser imports."""
+"""SEC filing identity and report-sample APIs."""
 
-from .archive import (
-    ArchiveConflictError,
-    ArchiveCorruptionError,
-    ArchiveError,
-    ArchiveWriter,
-    open_archive,
-    read_snapshot,
-)
 from .catalog import (
     APPROVED_FORMS,
+    CachedFiling,
+    CachedFilingScan,
     CatalogConflictError,
     CatalogError,
     read_cached_catalog,
+    scan_cached_filings,
     submission_rows,
 )
 from .models import (
@@ -20,32 +15,23 @@ from .models import (
     FILINGS_SCHEMA,
     CatalogResource,
     CatalogResult,
-    RawObjectRef,
-    RunSpec,
-    Snapshot,
     document_id,
     filing_id,
 )
 
 __all__ = [
     "APPROVED_FORMS",
-    "ArchiveConflictError",
-    "ArchiveCorruptionError",
-    "ArchiveError",
-    "ArchiveWriter",
+    "CachedFiling",
+    "CachedFilingScan",
     "CatalogConflictError",
     "CatalogError",
     "CatalogResource",
     "CatalogResult",
-    "RawObjectRef",
-    "RunSpec",
-    "Snapshot",
     "DOCUMENTS_SCHEMA",
     "FILINGS_SCHEMA",
     "document_id",
     "filing_id",
-    "open_archive",
     "read_cached_catalog",
-    "read_snapshot",
+    "scan_cached_filings",
     "submission_rows",
 ]

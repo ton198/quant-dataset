@@ -66,15 +66,14 @@ class MacrosConfig:
 @dataclass(frozen=True)
 class SourcesConfig:
     raw_dir: Path
-    organized_dir: Path
     progress_file: Path
     progress_tmp_file: Path
     progress_lock_file: Path
-    preserve_progress_on_success: bool
     universe: UniverseConfig
     market: MarketConfig
     financials: FinancialsConfig
     macros: MacrosConfig
+    filing_forms: tuple[str, ...]
 
 
 def _read_toml(path: Path, description: str) -> dict[str, Any]:
@@ -120,18 +119,17 @@ def load_sources(repo_root: Path) -> SourcesConfig:
         financials = data["financials"]
         macros = data["macros"]
         download = data["download"]
+        filings = data["filings"]
         if not all(
             isinstance(section, dict)
-            for section in (universe, market, financials, macros, download)
+            for section in (universe, market, financials, macros, download, filings)
         ):
             raise TypeError("each source section must be a table")
         return SourcesConfig(
             raw_dir=repo_root / str(download["raw_dir"]),
-            organized_dir=repo_root / str(download["organized_dir"]),
             progress_file=repo_root / str(download["progress_file"]),
             progress_tmp_file=repo_root / str(download["progress_tmp_file"]),
             progress_lock_file=repo_root / str(download["progress_lock_file"]),
-            preserve_progress_on_success=bool(download.get("preserve_progress_on_success", True)),
             universe=UniverseConfig(
                 source=str(universe["source"]),
                 exchanges=tuple(
@@ -167,6 +165,7 @@ def load_sources(repo_root: Path) -> SourcesConfig:
                 max_retries=int(macros.get("max_retries", 3)),
                 series=tuple(str(item) for item in macros["series"]),
             ),
+            filing_forms=tuple(str(item) for item in filings["forms"]),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ConfigError(f"Invalid or incomplete sources configuration in {path}: {exc}") from exc

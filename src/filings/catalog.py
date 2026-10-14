@@ -10,11 +10,12 @@ import hashlib
 import json
 import re
 from collections.abc import Collection, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
-from .models import CatalogResource, CatalogResult, filing_id
+from .models import _ACCESSION_RE, CatalogResource, CatalogResult, filing_id
 
 APPROVED_FORMS = frozenset(
     {
@@ -34,6 +35,35 @@ _SHA256_RE = re.compile(r"[0-9a-fA-F]{64}\Z", re.ASCII)
 _DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}\Z", re.ASCII)
 _PAGE_NAME_RE = re.compile(r"CIK([0-9]{10})-submissions-([0-9]+)\.json\Z", re.ASCII)
 _CACHE_PREFIX = PurePosixPath("data/raw/sec/financials")
+
+__all__ = [
+    "APPROVED_FORMS",
+    "CatalogError",
+    "CatalogConflictError",
+    "submission_rows",
+    "read_cached_catalog",
+    "CachedFiling",
+    "CachedFilingScan",
+    "scan_cached_filings",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class CachedFiling:
+    cik10: str
+    accession_number: str
+    form: str
+    filed_date: str
+    report_date: str | None
+    primary_document: str | None
+
+
+@dataclass(frozen=True)
+class CachedFilingScan:
+    filings: tuple[CachedFiling, ...]
+    skipped_resources: tuple[str, ...]
+    conflicting_accessions: tuple[str, ...]
+    invalid_row_count: int
 
 
 class CatalogError(ValueError):
@@ -346,6 +376,80 @@ def _manifest_json(cache_root: Path) -> Mapping[str, Any]:
     if "resources" not in manifest:
         raise CatalogError("manifest.json is missing resources")
     return manifest
+
+
+def scan_cached_filings(cache_root: Path, *, forms: Collection[str]) -> CachedFilingScan:
+    """Scan the latest verified submissions resources without touching the cache."""
+    if isinstance(forms, (str, bytes)):
+        raise CatalogError("forms must be a collection of form strings")
+    try:
+        selected_forms = frozenset(forms)
+    except TypeError as exc:
+        raise CatalogError("forms must be a collection of form strings") from exc
+    if any(not isinstance(form, str) for form in selected_forms):
+        raise CatalogError("forms must contain only strings")
+    if not selected_forms <= APPROVED_FORMS:
+        raise CatalogError("forms may only select approved forms")
+    root = Path(cache_root).resolve()
+    grouped = _manifest_records(_manifest_json(root)["resources"])
+    gathered: dict[tuple[str, str], dict[str, Any]] = {}
+    conflicts: set[tuple[str, str]] = set()
+    skipped: list[str] = []
+    invalid = 0
+    for key in sorted(grouped):
+        owner = _parse_owned_key(key)
+        if owner is None:
+            continue
+        try:
+            versions = grouped[key]
+            if not versions:
+                raise CatalogError(f"no manifest versions for {key}")
+            _, payload = _verified_resource(root, key, versions[-1])
+            rows = submission_rows(
+                payload, kind="submissions" if owner[1] is None else "submissions-page"
+            )
+        except CatalogError:
+            skipped.append(key)
+            continue
+        for row in rows:
+            if row.get("form") not in selected_forms:
+                continue
+            accession = row.get("accessionNumber")
+            try:
+                if not isinstance(accession, str) or not _ACCESSION_RE.fullmatch(accession):
+                    raise CatalogError("invalid accession")
+                _parse_iso_date(row.get("filingDate"), field="filingDate", required=True)
+                values = {
+                    field: row.get(field)
+                    for field in ("form", "filingDate", "reportDate", "primaryDocument")
+                }
+                _parse_iso_date(values["reportDate"], field="reportDate", required=False)
+                _optional_text(values["primaryDocument"], field="primaryDocument")
+            except CatalogError:
+                invalid += 1
+                continue
+            identity = (owner[0], accession)
+            if identity in conflicts:
+                continue
+            try:
+                gathered[identity] = _coalesce_rows(gathered.get(identity, {}), values, accession)
+            except CatalogConflictError:
+                conflicts.add(identity)
+                gathered.pop(identity, None)
+    filings = tuple(
+        CachedFiling(
+            cik,
+            accession,
+            row["form"],
+            row["filingDate"],
+            row.get("reportDate") or None,
+            row.get("primaryDocument") or None,
+        )
+        for (cik, accession), row in sorted(gathered.items())
+    )
+    return CachedFilingScan(
+        filings, tuple(skipped), tuple(sorted({accession for _, accession in conflicts})), invalid
+    )
 
 
 def read_cached_catalog(

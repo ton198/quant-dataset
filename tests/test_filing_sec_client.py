@@ -5,19 +5,13 @@ from __future__ import annotations
 import hashlib
 import http.client
 import io
-import sys
 import threading
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
-from pathlib import Path
 from typing import Any
 
 import pytest
-
-SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src"
-if str(SOURCE_ROOT) not in sys.path:
-    sys.path.insert(0, str(SOURCE_ROOT))
 
 from filings.sec_client import (
     DEFAULT_MAX_RESPONSE_BYTES,

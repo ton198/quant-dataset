@@ -1,1 +1,0 @@
-"""Shared query validation support."""

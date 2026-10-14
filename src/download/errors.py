@@ -9,7 +9,3 @@ class ConfigError(RuntimeError):
 
 class DownloadError(RuntimeError):
     """An expected provider or download failure."""
-
-
-class OrganizeError(RuntimeError):
-    """An invalid or unusable raw input during organization."""
